@@ -3,8 +3,9 @@ import * as S from './store.js';
 import * as D from './drive.js';
 import { invoicePdf, invoicePreviewUrl } from './render.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
+import * as G from './github.js';
 
-const VERSION = '1.0.1';
+const VERSION = '1.1.0';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -22,6 +23,10 @@ function h(tag, attrs = {}, ...kids) {
   }
   for (const k of kids.flat(Infinity)) if (k != null && k !== false) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
   return el;
+}
+/** Safely swap an element's contents: flattens lists and skips empty slots (fixes the [object …] / null bug). */
+function fill(el, ...kids) {
+  el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false).map((k) => (k instanceof Node ? k : document.createTextNode(String(k)))));
 }
 const chip = (text, kind = '') => h('span', { class: `chip ${kind}` }, text);
 const money = C.yen;
@@ -89,7 +94,7 @@ function render() {
   const [name, arg] = (location.hash.slice(1) || 'home').split('/');
   current = name;
   const view = (routes[name] || routes.home)(arg);
-  $app.replaceChildren(header(), h('main', {}, view), tabs());
+  fill($app, header(), h('main', {}, view), tabs());
 }
 S.onChange(() => { if (!sheetEl) render(); scheduleSync(); });
 D.onDrive(() => { const p = document.querySelector('.sync-pill'); if (p) p.replaceWith(syncPill()); });
@@ -118,7 +123,7 @@ function scheduleSync() {
 
 function tabs() {
   const t = [['home', '📊', 'Money'], ['jobs', '🎬', 'Jobs'], ['invoices', '🧾', 'Invoices'], ['receipts', '📸', 'Receipts'], ['more', '⚙️', 'More']];
-  const active = { invoice: 'invoices', clients: 'more', client: 'more', profile: 'more', settings: 'more', drive: 'more', help: 'more', data: 'more' }[current] || current;
+  const active = { invoice: 'invoices', clients: 'more', client: 'more', profile: 'more', settings: 'more', drive: 'more', help: 'more', data: 'more', email: 'more', updates: 'more' }[current] || current;
   return h('nav', { class: 'tabs' }, t.map(([k, i, l]) => h('a', { href: `#${k}`, class: active === k ? 'on' : '' }, h('span', { class: 'ti' }, i), h('span', {}, l))));
 }
 
@@ -136,6 +141,8 @@ routes.home = () => {
   return h('div', { class: 'stack' },
     h('div', { class: 'row between' }, h('h1', {}, `${homeYear} side income`),
       sel(years.map((y) => [y, y]), homeYear, { class: 'year', onchange: (e) => { homeYear = Number(e.target.value); render(); } })),
+
+    setupCard(),
 
     h('div', { class: 'card hero' },
       h('div', { class: 'big' }, money(s.net)),
@@ -166,10 +173,7 @@ routes.home = () => {
       h('div', { class: 'row between' }, h('h3', {}, 'Owed to you'), h('span', { class: 'big2' }, money(s.owed))),
       s.overdueCount ? h('a', { class: 'notice bad', href: '#invoices' }, `${s.overdueCount} overdue (${money(s.overdue)}) → send a reminder`) : h('p', { class: 'small muted' }, 'Nothing overdue.')),
 
-    h('div', { class: 'card' },
-      h('h3', {}, 'By month'),
-      h('div', { class: 'bars' }, s.months.map((v, i) => h('div', { class: 'bar', title: money(v) },
-        h('i', { style: `height:${Math.round((v / maxM) * 100)}%` }), h('span', {}, 'JFMAMJJASOND'[i]))))),
+    monthChart(s, maxM),
 
     h('div', { class: 'card small' },
       h('h3', {}, 'Key dates'),
@@ -180,6 +184,79 @@ routes.home = () => {
         h('li', {}, h('b', {}, `June ${homeYear + 1}: `), 'resident tax bills arrive ', help('住民税')))),
   );
 };
+
+
+// ---------- month chart: hover = amount, click = that month's invoices ----------
+const shortYen = (v) => (v >= 10000 ? `${Math.round(v / 1000)}k` : v ? C.num(v) : '');
+function monthChart(s, maxM) {
+  const tip = h('div', { class: 'tip' });
+  const show = (bar, i, v) => {
+    fill(tip, h('b', {}, `${C.MONTHS[i]} ${homeYear}`), h('span', {}, money(v)), h('small', {}, v ? 'Click to see invoices' : 'Nothing logged'));
+    tip.style.left = `${bar.offsetLeft + bar.offsetWidth / 2}px`;
+    tip.classList.add('on');
+  };
+  const hide = () => tip.classList.remove('on');
+  const bars = s.months.map((v, i) => {
+    const b = h('button', { type: 'button', class: `bar ${v ? '' : 'zero'}`, 'aria-label': `${C.MONTHS[i]}: ${money(v)}`,
+      onclick: () => { hide(); monthSheet(homeYear, i + 1); } },
+    h('em', {}, shortYen(v)), h('i', { style: `height:${Math.round((v / maxM) * 100)}%` }), h('span', {}, C.MONTHS[i].slice(0, 3)));
+    b.addEventListener('mouseenter', () => show(b, i, v));
+    b.addEventListener('focus', () => show(b, i, v));
+    b.addEventListener('mouseleave', hide);
+    b.addEventListener('blur', hide);
+    return b;
+  });
+  return h('div', { class: 'card' },
+    h('div', { class: 'row between' }, h('h3', {}, 'By month'), h('span', { class: 'small muted' }, 'by the day you worked')),
+    h('div', { class: 'bars' }, bars, tip));
+}
+
+function monthSheet(year, month) {
+  const d = C.monthDetail(data, year, month);
+  const go2 = (hash) => { closeSheet(); go(hash); };
+  openSheet(`${C.MONTHS[month - 1]} ${year}`, h('div', { class: 'stack' },
+    h('div', { class: 'card hero flat' }, h('div', { class: 'big' }, money(d.total)), h('div', { class: 'muted small' }, `earned from ${d.count} job${d.count === 1 ? '' : 's'} worked this month`)),
+    !d.count ? h('p', { class: 'empty' }, 'No work logged this month.') : null,
+    d.invoices.length ? [h('h4', {}, 'Invoices'), h('div', { class: 'list' }, d.invoices.map(({ inv, amount, jobs }) => {
+      const st = C.invoiceStatus(inv, data); const t = C.invoiceTotals(inv, data);
+      return h('div', { class: 'item', onclick: () => go2(`invoice/${inv.id}`) }, h('div', { class: 'grow' },
+        h('div', { class: 'row between' }, h('b', {}, `#${inv.number} · ${clientName(inv.clientId)}`), h('b', {}, money(amount))),
+        h('div', { class: 'row between small muted' },
+          h('span', {}, `${jobs.length} job${jobs.length === 1 ? '' : 's'} this month${t.total !== amount ? ` · invoice total ${money(t.total)}` : ''}`),
+          chip(STATUS_LABEL[st], st))), '›');
+    }))] : null,
+    d.direct.length ? [h('h4', {}, 'Paid without an invoice'), h('div', { class: 'list' }, d.direct.map(({ job, amount }) => h('div', { class: 'item', onclick: () => { closeSheet(); jobForm(job); } }, h('div', { class: 'grow row between' }, h('span', {}, `${C.fmtDateSlash(job.date)} · ${job.description || clientName(job.clientId)}`), h('b', {}, money(amount))))))] : null,
+    d.open.length ? [h('h4', {}, 'Not invoiced yet'), h('div', { class: 'list' }, d.open.map(({ job, amount }) => h('div', { class: 'item', onclick: () => { closeSheet(); jobForm(job); } }, h('div', { class: 'grow row between' }, h('span', {}, `${C.fmtDateSlash(job.date)} · ${clientName(job.clientId)} · ${job.description || job.project || ''}`), h('b', {}, money(amount)))))),
+      h('button', { class: 'btn', onclick: () => { jobFilter = 'open'; go2('jobs'); } }, 'Invoice these')] : null));
+}
+
+// ---------- setup checklist ----------
+function setupState() {
+  return [
+    ['Load your details', !!(data.profile.nameEn && data.clients.length), '#data'],
+    ['Connect Google Drive', !!data.drive.lastSync, '#drive'],
+    ['Set up email', localStorage.getItem('fl_mail_done') === '1', '#email'],
+    ['Set up in-app updates', G.hasToken(), '#updates'],
+  ];
+}
+function setupCard() {
+  const st = setupState();
+  const done = st.filter((x) => x[1]).length;
+  if (done === st.length || localStorage.getItem('fl_setup_hide') === '1') return null;
+  return h('div', { class: 'card setup' },
+    h('div', { class: 'row between' }, h('h3', {}, `Finish setting up · ${done} of ${st.length}`),
+      h('button', { class: 'icon', onclick: () => { localStorage.setItem('fl_setup_hide', '1'); render(); }, 'aria-label': 'Hide' }, '✕')),
+    h('div', { class: 'list' }, st.map(([label, ok, href]) => h('a', { class: `item ${ok ? 'done' : ''}`, href },
+      h('span', { class: 'tick' }, ok ? '✓' : ''), h('span', { class: 'grow' }, label), ok ? null : '›'))));
+}
+
+// ---------- guide building blocks ----------
+const step = (n, title, ...body) => h('div', { class: 'step' }, h('span', { class: 'num' }, n), h('div', { class: 'grow' }, h('b', {}, title), body));
+const linkBtn = (href, label) => h('a', { class: 'btn small ghost', href, target: '_blank', rel: 'noopener' }, `${label} ↗`);
+const copyBtn = (text, label = 'Copy') => h('button', { class: 'btn small ghost', type: 'button', onclick: () => copy(text) }, label);
+const codeLine = (text) => h('div', { class: 'codeline' }, h('code', {}, text), copyBtn(text));
+const p_ = (...k) => h('p', { class: 'small' }, k);
+const trouble = (q, a) => h('details', { class: 'trouble' }, h('summary', {}, q), h('p', { class: 'small' }, a));
 
 // =====================================================================
 // JOBS
@@ -307,7 +384,7 @@ function invoiceForm(inv, preset = {}) {
     const fIssue = inp({ type: 'date', value: st.issueDate, onchange: (e) => { st.issueDate = e.target.value; st.dueDate = C.endOfFollowingMonth(e.target.value); draw(); } });
     const fDue = inp({ type: 'date', value: st.dueDate, onchange: (e) => { st.dueDate = e.target.value; } });
 
-    body.replaceChildren(
+    fill(body, 
       !isNew && base.status !== 'draft' ? h('p', { class: 'notice warn' }, 'This invoice was already sent. Only change it if you\'re re-sending it.') : null,
       field('Client', fClient),
       st.clientId ? [
@@ -360,7 +437,7 @@ routes.invoice = (id) => {
   const emailBox = h('div');
 
   const prepare = async (kind) => {
-    emailBox.replaceChildren(h('p', { class: 'small muted' }, 'Preparing files…'));
+    fill(emailBox, h('p', { class: 'small muted' }, 'Preparing files…'));
     try {
       const pdf = await invoicePdf(inv, data);
       const files = [pdf];
@@ -373,7 +450,7 @@ routes.invoice = (id) => {
       if (D.isConnected()) D.saveInvoicePdf(inv, pdf).then(() => S.touch(inv)).catch(() => {});
       const mail = emailFor(inv, data, kind);
       const share = canShareFiles(files);
-      emailBox.replaceChildren(h('div', { class: 'card mail' },
+      fill(emailBox, h('div', { class: 'card mail' },
         h('h3', {}, kind === 'reminder' ? 'Reminder email' : 'Email ready'),
         missing.length ? h('p', { class: 'notice warn' }, `${missing.length} receipt file(s) are on another device. Sync there first, then connect Drive here.`) : null,
         h('div', { class: 'kv' }, h('span', {}, 'To'), h('span', { class: 'grow' }, mail.to || '(no email saved for this client)'), mail.to ? h('button', { class: 'btn small ghost', onclick: () => copy(mail.to, 'Address copied') }, 'Copy') : null),
@@ -388,7 +465,7 @@ routes.invoice = (id) => {
           h('button', { class: 'btn ghost', onclick: () => copy(mail.body, 'Email text copied') }, 'Copy text'),
           !share ? h('a', { class: 'btn ghost', href: mailtoLink(mail) }, 'Open mail app') : null),
         !share ? h('p', { class: 'small muted' }, 'This browser can\'t share files. Download the attachments, then open your mail app and attach them.') : null));
-    } catch (e) { emailBox.replaceChildren(h('p', { class: 'notice bad' }, e.message)); }
+    } catch (e) { fill(emailBox, h('p', { class: 'notice bad' }, e.message)); }
   };
   const afterSend = () => {
     if (inv.status === 'draft' && confirmBox('Mark this invoice as sent?')) { inv.status = 'sent'; inv.sentDate = C.today(); S.upsert('invoices', inv); }
@@ -487,12 +564,12 @@ function receiptForm(rc, preset = {}) {
   let newFile = null;
   const fFile = h('input', { type: 'file', accept: 'image/*,application/pdf' });
   const prev = h('div', { class: 'rprev' }, r.hasFile ? 'File attached' : 'No photo yet');
-  if (r.hasFile) S.getFile(r.id).then((b) => { if (b && b.type.startsWith('image/')) prev.replaceChildren(h('img', { src: URL.createObjectURL(b) })); else if (b) prev.replaceChildren(h('a', { href: URL.createObjectURL(b), target: '_blank' }, 'Open PDF')); else if (r.driveId) prev.textContent = 'Saved on Google Drive'; });
+  if (r.hasFile) S.getFile(r.id).then((b) => { if (b && b.type.startsWith('image/')) fill(prev, h('img', { src: URL.createObjectURL(b) })); else if (b) fill(prev, h('a', { href: URL.createObjectURL(b), target: '_blank' }, 'Open PDF')); else if (r.driveId) prev.textContent = 'Saved on Google Drive'; });
   fFile.onchange = async () => {
     const f = fFile.files[0]; if (!f) return;
     newFile = await compressImage(f);
     newFile.__name = f.name;
-    prev.replaceChildren(newFile.type.startsWith('image/') ? h('img', { src: URL.createObjectURL(newFile) }) : h('span', {}, f.name));
+    fill(prev, newFile.type.startsWith('image/') ? h('img', { src: URL.createObjectURL(newFile) }) : h('span', {}, f.name));
   };
   const fDate = inp({ type: 'date', value: r.date });
   const fAmt = inp({ type: 'number', inputmode: 'numeric', value: r.amount, placeholder: '¥' });
@@ -542,7 +619,9 @@ routes.more = () => h('div', { class: 'stack' },
     [['clients', '👥', 'Clients', 'Who withholds, who gets 10% tax, rates'],
       ['profile', '🪪', 'My details', 'Name, address, bank (on every invoice)'],
       ['settings', '🧮', 'Tax settings', 'Set-aside rate, salary'],
-      ['drive', '☁️', 'Google Drive', D.isConnected() ? 'Connected' : (D.getClientId() ? 'Not connected this session' : 'Not set up')],
+      ['drive', '☁️', 'Google Drive', D.isConnected() ? 'Connected' : (data.drive.lastSync ? 'Set up · tap Sync to sign in' : 'Not set up · guide inside')],
+      ['email', '✉️', 'Email setup', localStorage.getItem('fl_mail_done') === '1' ? 'Set up' : 'How sending invoices works'],
+      ['updates', '⬆️', 'App updates', G.hasToken() ? `v${VERSION} · install updates here` : `v${VERSION} · set up in-app updates`],
       ['data', '💾', 'Backup & restore', 'Download a backup, load your starter file'],
       ['help', '📖', 'Plain-English glossary', 'What all the Japanese tax words mean'],
     ].map(([k, i, t, s]) => h('a', { class: 'item', href: `#${k}` }, h('span', { class: 'ti' }, i), h('div', { class: 'grow' }, h('b', {}, t), h('div', { class: 'small muted' }, s)), '›'))),
@@ -621,19 +700,146 @@ routes.settings = () => {
 routes.drive = () => {
   const cid = inp({ value: D.getClientId(), placeholder: 'xxxxxxxx.apps.googleusercontent.com' });
   const last = data.drive.lastSync ? new Date(data.drive.lastSync).toLocaleString() : 'never';
+  const C_ = 'https://console.cloud.google.com';
+  const set = !!D.getClientId();
+  const guide = h('div', { class: 'card guide' },
+    h('h3', {}, 'Setup guide · one time, about 10 min'),
+    p_('Do this on your computer. It\'s free: skip any "free trial" or billing offers Google shows you.'),
+    step(1, 'Open Google Cloud', p_('Sign in with the Google account whose Drive you want to use.'), linkBtn(C_, 'Google Cloud')),
+    step(2, 'Create a project', p_('Name it ', h('b', {}, 'Freelance Ledger'), ' → Create. When it\'s ready, check it\'s selected in the project picker at the very top of the page.'), linkBtn(`${C_}/projectcreate`, 'New project')),
+    step(3, 'Turn on the Drive API', p_('Click ', h('b', {}, 'Enable'), '.'), linkBtn(`${C_}/apis/library/drive.googleapis.com`, 'Drive API')),
+    step(4, 'Set up the sign-in screen', p_('Click ', h('b', {}, 'Get started'), '. App name: Freelance Ledger. Support email: your Gmail → Next. Audience: ', h('b', {}, 'External'), ' → Next. Contact email: your Gmail → Next. Tick agree → ', h('b', {}, 'Create'), '.'), linkBtn(`${C_}/auth/overview`, 'Sign-in screen')),
+    step(5, 'Add yourself as a tester', p_('Under ', h('b', {}, 'Test users'), ' click ', h('b', {}, 'Add users'), ', type your Gmail, Save. Without this Google blocks you.'), linkBtn(`${C_}/auth/audience`, 'Audience')),
+    step(6, 'Create the Client ID', p_('Application type: ', h('b', {}, 'Web application'), '. Name: Ledger web. Under ', h('b', {}, 'Authorised JavaScript origins'), ' click Add URI and paste exactly this (no slash at the end):'), codeLine(location.origin), p_('Leave "redirect URIs" empty. Click ', h('b', {}, 'Create'), '.'), linkBtn(`${C_}/auth/clients/create`, 'Create client')),
+    step(7, 'Paste the Client ID below', p_('Google shows it in a popup. It ends in ', h('code', {}, '.apps.googleusercontent.com'), '. Paste it in the box below and tap Save. Lost the popup? Open Clients and click the name to see it again.'), linkBtn(`${C_}/auth/clients`, 'Clients')),
+    step(8, 'Connect', p_('Tap ', h('b', {}, 'Connect & sync'), '. Google warns "Google hasn\'t verified this app". That\'s normal for your own app: tap ', h('b', {}, 'Continue'), ', tick the Drive boxes, Continue.')),
+    step(9, 'Then on your phone', p_('Open the app on your phone → More → Google Drive. Paste the ', h('b', {}, 'same'), ' Client ID (use the copy button below, send it to yourself), then Connect & sync. Everything comes across.')),
+    h('h4', {}, 'If something goes wrong'),
+    trouble('"Error 400: origin_mismatch" or "redirect_uri_mismatch"', `Step 6 doesn't match. The origin must be exactly ${location.origin}. Fix it in Clients, wait 5 minutes, try again.`),
+    trouble('"Access blocked" or "403: access_denied"', 'You\'re not on the tester list. Do step 5 with the exact Google account you\'re signing in with.'),
+    trouble('Nothing happens when I tap Connect', 'Your browser blocked the popup. Allow popups for this site. On iPhone, open the app from Safari or the home-screen icon, not from inside another app.'),
+    trouble('It asks me to sign in again', 'Normal. Google sign-ins last about an hour. Tap Sync and it reconnects.'));
+
   return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Google Drive'),
-    h('p', { class: 'small' }, 'Your data saves on this device and syncs to your Google Drive, so your phone and computer stay in step. Invoices and receipts also go into a visible ', h('b', {}, 'Freelance Ledger'), ' folder in Drive.'),
-    h('div', { class: 'card form' },
-      field('Google Client ID', cid, 'One-time setup. See the setup guide. Enter the same ID on each device.'),
-      h('button', { class: 'btn ghost', onclick: () => { D.setClientId(cid.value); toast('Client ID saved'); render(); } }, 'Save Client ID')),
+    h('p', { class: 'small' }, 'Your data saves on this device and syncs to your Google Drive, so your phone and computer stay in step. Invoices and receipts also go into a ', h('b', {}, 'Freelance Ledger'), ' folder in your Drive.'),
     h('div', { class: 'card' },
-      h('div', { class: 'row between' }, h('b', {}, D.isConnected() ? '✅ Connected' : '⚪ Not connected'), h('span', { class: 'small muted' }, `Last sync: ${last}`)),
+      h('div', { class: 'row between' }, h('b', {}, D.isConnected() ? '✅ Connected' : data.drive.lastSync ? '🟡 Set up, sign in to sync' : '⚪ Not set up yet'), h('span', { class: 'small muted' }, `Last sync: ${last}`)),
       D.state.message && D.state.status === 'error' ? h('p', { class: 'notice bad' }, D.state.message) : null,
-      h('div', { class: 'row gap wrap' },
-        h('button', { class: 'btn', disabled: !D.getClientId() || null, onclick: syncTap }, D.isConnected() ? 'Sync now' : 'Connect & sync'),
-        D.isConnected() ? h('button', { class: 'btn ghost', onclick: () => { D.disconnect(); render(); } }, 'Disconnect') : null,
-        h('a', { class: 'btn ghost', href: 'https://drive.google.com/drive/search?q=Freelance%20Ledger', target: '_blank', rel: 'noopener' }, 'Open Drive ↗'))),
-    h('p', { class: 'small muted' }, 'Google asks you to sign in again about once an hour. Just tap Sync when it does.'));
+      h('div', { class: 'form' },
+        field('Google Client ID', cid),
+        h('div', { class: 'row gap wrap' },
+          h('button', { class: 'btn ghost', onclick: () => { if (!/\.apps\.googleusercontent\.com$/.test(cid.value.trim())) return toast('That doesn\'t look like a Client ID (should end in .apps.googleusercontent.com)', 'bad'); D.setClientId(cid.value); D.preload(); toast('Client ID saved'); render(); } }, 'Save'),
+          set ? copyBtn(D.getClientId(), 'Copy ID for phone') : null,
+          h('button', { class: 'btn', disabled: !set || null, onclick: syncTap }, D.isConnected() ? 'Sync now' : 'Connect & sync'),
+          D.isConnected() ? h('button', { class: 'btn ghost', onclick: () => { D.disconnect(); render(); } }, 'Disconnect') : null,
+          data.drive.lastSync ? h('a', { class: 'btn ghost', href: 'https://drive.google.com/drive/search?q=Freelance%20Ledger', target: '_blank', rel: 'noopener' }, 'Open Drive ↗') : null))),
+    data.drive.lastSync ? h('details', {}, h('summary', {}, 'Show the setup guide again'), guide) : guide);
+};
+
+routes.email = () => {
+  const done = localStorage.getItem('fl_mail_done') === '1';
+  const markDone = () => { localStorage.setItem('fl_mail_done', '1'); render(); };
+  const test = async () => {
+    try {
+      const tmp = { ...data,
+        clients: [{ id: 'test', nameJa: 'テスト送信', nameEn: 'Test send', honorific: '様', emails: data.profile.email, lang: 'ja' }],
+        jobs: [{ id: 'tj', clientId: 'test', lane: 'camera', date: C.today(), qty: 1, unit: 'day', rate: 10000, description: 'TEST (not a real invoice)' }], receipts: [], invoices: [] };
+      const inv = { id: 'ti', number: 'TEST', clientId: 'test', lang: 'ja', issueDate: C.today(), dueDate: C.endOfFollowingMonth(C.today()), project: 'Email test', jobIds: ['tj'], receiptIds: [], addTax: false, withhold: false, status: 'draft', payments: [] };
+      const pdf = await invoicePdf(inv, tmp);
+      const mail = { to: data.profile.email, subject: 'Freelance Ledger email test', body: 'If this arrived with a PDF attached, email is set up.' };
+      if (!canShareFiles([pdf])) { downloadFile(pdf); toast('This browser can\'t share files. Test PDF downloaded instead'); return; }
+      navigator.clipboard?.writeText(mail.to).catch(() => {});
+      await shareFiles([pdf], mail);
+      toast('Your address is copied. Paste it into To and send');
+      markDone();
+    } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'bad'); }
+  };
+  return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Email setup'),
+    h('div', { class: 'card' },
+      h('p', {}, h('b', {}, 'There\'s nothing to link.'), ' The app makes the invoice PDF + receipts and hands them to your ', h('b', {}, 'Outlook app'), ', which is signed in to ', data.profile.email || 'your Hotmail', '. You check it and press send in Outlook.'),
+      done ? h('p', { class: 'notice' }, '✓ Email is set up on this device.') : null),
+    h('div', { class: 'card guide' },
+      h('h3', {}, '📱 On your phone (best)'),
+      step(1, 'Install Outlook', p_('Free from Microsoft.'), h('div', { class: 'row gap wrap' }, linkBtn('https://apps.apple.com/app/microsoft-outlook/id951937596', 'App Store'), linkBtn('https://play.google.com/store/apps/details?id=com.microsoft.office.outlook', 'Google Play'))),
+      step(2, 'Sign in with your Hotmail', p_('Open Outlook → Add account → ', h('b', {}, data.profile.email || 'your Hotmail'), '. Send yourself a normal email to check it works.')),
+      step(3, 'Send a test from this app', p_('Tap below and choose ', h('b', {}, 'Outlook'), ' in the share menu. Your own address is copied: tap To, paste, send.'), h('button', { class: 'btn small', onclick: test }, 'Send test to myself')),
+      step(4, 'Outlook not in the share menu?', p_('iPhone: scroll the row of app icons to the end → ', h('b', {}, 'More'), ' → Edit → add Outlook. Android: it\'s in the list. Search "Outlook".')),
+      step(5, 'For real invoices', p_('Invoice → ', h('b', {}, '✉️ Email invoice'), ' → ', h('b', {}, 'Share to Outlook'), '. PDF, receipts and the message text are filled in. Paste the client\'s address (already copied). If the subject is blank, go back and tap Copy next to Subject. Send, then tap ', h('b', {}, 'Mark sent'), ' in the app.'))),
+    h('div', { class: 'card guide' },
+      h('h3', {}, '💻 On your computer'),
+      step(1, 'Get the files', p_('Invoice → ✉️ Email invoice → ', h('b', {}, 'Download files'), '. The PDF + receipts land in Downloads.')),
+      step(2, 'Write the email in Outlook', p_('Open Outlook, start a new email, and use the Copy buttons in the app for To, Subject and the text. Drag the downloaded files in. Send.'), linkBtn('https://outlook.live.com/mail/0/deeplink/compose', 'New Outlook email')),
+      p_('In Safari on a Mac, "Share to Outlook" may appear too. Use it if it does.')),
+    done ? null : h('button', { class: 'btn ghost', onclick: markDone }, 'I\'ve done this'));
+};
+
+routes.updates = () => {
+  const cfg = G.getConfig();
+  const fOwner = inp({ value: cfg.owner, placeholder: 'Rokehan' });
+  const fRepo = inp({ value: cfg.repo, placeholder: 'freelance-ledger' });
+  const fToken = inp({ type: 'password', value: cfg.token, placeholder: 'github_pat_…', autocomplete: 'off' });
+  const status = h('div');
+  const prog = h('div');
+  const saveTest = async () => {
+    G.setConfig({ owner: fOwner.value, repo: fRepo.value, token: fToken.value });
+    fill(status, h('p', { class: 'small muted' }, 'Checking…'));
+    try { const name = await G.test(); fill(status, h('p', { class: 'notice' }, `✓ Connected to ${name}. You can install updates now.`)); }
+    catch (e) { fill(status, h('p', { class: 'notice bad' }, e.message)); }
+  };
+  const fZip = h('input', { type: 'file', accept: '.zip,application/zip,.html,.js,.css,.json,.png,.webmanifest,.md', multiple: true });
+  fZip.onchange = async () => {
+    if (!fZip.files.length) return;
+    fill(prog, h('p', { class: 'small muted' }, 'Reading the update…'));
+    try {
+      const pack = await G.prepare([...fZip.files], data.profile);
+      fill(prog, h('div', { class: 'card flat' },
+        h('b', {}, pack.version ? `Update to v${pack.version}` : 'Update (no version number inside)'),
+        h('p', { class: 'small muted' }, `${pack.files.length} files: ${pack.files.map((f) => f.path).join(', ')}`),
+        pack.skipped.length ? h('p', { class: 'small muted' }, `Ignored: ${pack.skipped.join(', ')}`) : null,
+        pack.version === VERSION ? h('p', { class: 'notice warn' }, 'You already have this version. Installing again is harmless.') : null,
+        h('button', { class: 'btn', onclick: async (e) => {
+          e.target.disabled = true;
+          const line = h('p', { class: 'small' });
+          fill(prog, h('div', { class: 'card flat' }, line));
+          const say = (t) => { line.textContent = t; };
+          try {
+            await G.publish(pack.files, `Update to v${pack.version || 'new'} (from the app)`, say);
+            if (pack.version) localStorage.setItem('fl_updating_to', pack.version);
+            const live = await G.waitForLive(pack.version, say);
+            say(live ? 'Published! Reloading…' : 'Published. GitHub is slow today: reload in a few minutes.');
+            if (live) setTimeout(G.reloadFresh, 800);
+          } catch (err) { fill(prog, h('p', { class: 'notice bad' }, err.message)); }
+        } }, 'Install update')));
+    } catch (e) { fill(prog, h('p', { class: 'notice bad' }, e.message)); }
+    fZip.value = '';
+  };
+  const has = G.hasToken();
+  const guide = h('div', { class: 'card guide' },
+    h('h3', {}, 'One-time setup · about 3 min'),
+    p_('The app needs a key that lets it change your freelance-ledger repo, and nothing else. Do this on the device you\'ll update from (your computer is easiest).'),
+    step(1, 'Make a GitHub key', p_('Open the link (sign in to GitHub). Token name: ', h('b', {}, 'Freelance Ledger updater'), '. Expiration: pick the longest option.'), linkBtn('https://github.com/settings/personal-access-tokens/new', 'New GitHub key')),
+    step(2, 'Only this repo', p_('Repository access → ', h('b', {}, 'Only select repositories'), ' → choose ', h('b', {}, cfg.repo || 'freelance-ledger'), '.')),
+    step(3, 'Give it permission', p_('Permissions → Repository permissions → ', h('b', {}, 'Contents'), ' → ', h('b', {}, 'Read and write'), '. Leave everything else alone.')),
+    step(4, 'Create and copy it', p_('Click ', h('b', {}, 'Generate token'), ', then copy it (starts with ', h('code', {}, 'github_pat_'), '). GitHub only shows it once.')),
+    step(5, 'Paste it below', p_('Paste it in the GitHub key box, then tap ', h('b', {}, 'Save & test'), '.')));
+
+  return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'App updates'),
+    h('div', { class: 'card' },
+      h('div', { class: 'row between' }, h('b', {}, `Installed: v${VERSION}`), has ? chip('Updates ready', 'ok') : chip('Not set up', 'warn')),
+      h('p', { class: 'small' }, 'When I send you a new version (a .zip file), download it, then choose it here. The app publishes it to your site and reloads. Your other devices update on their own the next time they open. Your data isn\'t touched.')),
+    has ? null : guide,
+    h('div', { class: 'card' }, h('h3', {}, 'Install an update'),
+      has ? [h('label', { class: 'filebtn' }, '📦 Choose update .zip', fZip),
+        h('p', { class: 'small muted' }, 'Safari unzipped it into a folder? Open the folder and select all the files inside instead.'), prog]
+        : h('p', { class: 'small muted' }, 'Do the setup above first.')),
+    h('details', { open: !has || null }, h('summary', {}, 'GitHub connection'),
+      h('div', { class: 'card form' },
+        h('div', { class: 'grid2' }, field('Owner', fOwner), field('Repo', fRepo)),
+        field('GitHub key', fToken, 'Kept on this device only.'),
+        h('div', { class: 'row gap wrap' }, h('button', { class: 'btn', onclick: saveTest }, 'Save & test'),
+          has ? h('button', { class: 'btn ghost bad', onclick: () => { G.forgetToken(); render(); } }, 'Remove key') : null),
+        status)),
+    has ? h('details', {}, h('summary', {}, 'Show the setup guide again'), guide) : null);
 };
 
 routes.data = () => h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Backup & restore'),
@@ -651,6 +857,7 @@ routes.help = () => h('div', { class: 'stack' }, h('a', { href: '#more', class: 
 
 // ---------- boot ----------
 if (D.getClientId()) D.preload();
+if (localStorage.getItem('fl_updating_to') === VERSION) { localStorage.removeItem('fl_updating_to'); setTimeout(() => toast(`Updated to v${VERSION} ✓`), 600); }
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 if (!data.clients.length && !data.jobs.length && !localStorage.getItem('fl_welcomed')) {
   setTimeout(() => openSheet('Welcome 👋', h('div', {},

@@ -101,6 +101,35 @@ export function invoiceForReceipt(rId, data) {
   return data.invoices.find((i) => alive(i) && (i.receiptIds || []).includes(rId)) || null;
 }
 
+/** Income from one job: its fee plus its share of any 10% tax on its invoice. */
+export function jobIncome(job, data) {
+  const fee = jobFee(job);
+  const inv = invoiceForJob(job.id, data);
+  if (!inv) return { fee, tax: 0, wh: 0, income: fee, inv: null };
+  const t = invoiceTotals(inv, data);
+  const share = t.fees ? fee / t.fees : 0;
+  const tax = Math.round(t.tax * share), wh = Math.round(t.wh * share);
+  return { fee, tax, wh, income: fee + tax, inv };
+}
+
+/** Everything earned in one month (by work date), grouped by invoice. month = 1-12 */
+export function monthDetail(data, year, month) {
+  const jobs = data.jobs.filter((j) => alive(j) && yearOf(j.date) === year && monthOf(j.date) === month).sort((a, b) => a.date.localeCompare(b.date));
+  const invs = new Map(); const direct = []; const open = []; let total = 0;
+  for (const j of jobs) {
+    const r = jobIncome(j, data);
+    total += r.income;
+    if (r.inv) {
+      const e = invs.get(r.inv.id) || { inv: r.inv, amount: 0, jobs: [] };
+      e.amount += r.income; e.jobs.push(j); invs.set(r.inv.id, e);
+    } else if (j.direct) direct.push({ job: j, amount: r.income });
+    else open.push({ job: j, amount: r.income });
+  }
+  return { total, invoices: [...invs.values()], direct, open, count: jobs.length };
+}
+
+export const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
 /**
  * Year summary. Income is counted by WORK date.
  * Consumption tax you charge counts as income (you're not registered, so you keep it).
@@ -114,21 +143,11 @@ export function yearSummary(data, year, settings = data.settings || {}) {
 
   for (const job of data.jobs.filter(alive)) {
     if (yearOf(job.date) !== year) continue;
-    const fee = jobFee(job);
-    const inv = invoiceForJob(job.id, data);
-    let extra = 0, wh = 0;
-    if (inv) {
-      const t = invoiceTotals(inv, data);
-      const share = t.fees ? fee / t.fees : 0;
-      extra = Math.round(t.tax * share);
-      wh = Math.round(t.wh * share);
-    } else if (!job.direct) {
-      uninvoiced += fee;
-    }
-    const inc = fee + extra;
-    income += inc; taxCharged += extra; withheld += wh;
-    lanes[job.lane] = (lanes[job.lane] || 0) + inc;
-    months[monthOf(job.date) - 1] += inc;
+    const r = jobIncome(job, data);
+    if (!r.inv && !job.direct) uninvoiced += r.fee;
+    income += r.income; taxCharged += r.tax; withheld += r.wh;
+    lanes[job.lane] = (lanes[job.lane] || 0) + r.income;
+    months[monthOf(job.date) - 1] += r.income;
   }
 
   let expenses = 0;
