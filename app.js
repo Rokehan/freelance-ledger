@@ -4,7 +4,7 @@ import * as D from './drive.js';
 import { invoicePdf, invoicePreviewUrl } from './render.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const { data } = S;
 const $app = document.getElementById('app');
 
