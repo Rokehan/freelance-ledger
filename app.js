@@ -6,7 +6,7 @@ import { readReceipt } from './ocr.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.5.1';
+const VERSION = '1.6.1';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -762,7 +762,7 @@ async function compressImage(file) {
 
 function receiptForm(rc, preset = {}, onSaved = null, startFile = null, { onCancel = null } = {}) {
   const isNew = !rc;
-  const r = rc ? { ...rc } : { id: S.uid('rc'), deleted: false, date: C.today(), amount: '', vendor: '', category: 'Taxi', type: 'reimb', jobId: '', clientId: '', notes: '', hasFile: false, ...preset };
+  const r = rc ? { ...rc } : { id: S.uid('rc'), deleted: false, date: C.today(), amount: '', vendor: '', category: 'Other', type: 'reimb', jobId: '', clientId: '', notes: '', hasFile: false, ...preset };
   let newFile = null;
   const prev = h('div', { class: 'rprev' }, r.hasFile ? 'File attached' : 'No photo yet');
   if (r.hasFile) S.getFile(r.id).then((b) => { if (b && b.type.startsWith('image/')) fill(prev, h('img', { src: URL.createObjectURL(b) })); else if (b) fill(prev, h('a', { href: URL.createObjectURL(b), target: '_blank' }, 'Open PDF')); else if (r.driveId) prev.textContent = 'Saved on Google Drive'; });
@@ -771,11 +771,13 @@ function receiptForm(rc, preset = {}, onSaved = null, startFile = null, { onCanc
     newFile = await compressImage(f);
     newFile.__name = f.name;
     fill(prev, newFile.type.startsWith('image/') ? h('img', { src: URL.createObjectURL(newFile) }) : h('span', {}, f.name));
-    if (newFile.type.startsWith('image/') && data.settings.autoReadReceipts !== false) autoRead(newFile);
+    if (f.type.startsWith('image/') && data.settings.autoReadReceipts !== false) autoRead(f);
   };
   // ---- auto-read the photo (on this device) ----
   const touched = new Set();
   const readBox = h('div');
+  let readParts = r.parts || [], readItems = r.items || [];
+  const splitT = toggle('Save as separate receipts per category', false, 'One receipt per category, each with its share of the total. Same photo on each.');
   const autoRead = async (blob) => {
     const line = h('span', {}, 'Reading the receipt…');
     fill(readBox, h('div', { class: 'notice read' }, h('span', { class: 'spin' }, '◌'), line));
@@ -787,8 +789,22 @@ function receiptForm(rc, preset = {}, onSaved = null, startFile = null, { onCanc
       set('date', fDate, got.date, got.date ? C.fmtDateSlash(got.date) : '');
       set('vendor', fVendor, got.vendor, got.vendor);
       if (got.category && CATS.includes(got.category)) set('category', fCat, got.category, got.category);
+      readItems = got.items || []; readParts = got.parts || [];
+      const partsView = readParts.length > 1 ? h('div', { class: 'parts' },
+        h('b', { class: 'small' }, `Mixed receipt: ${readItems.length} items`),
+        h('div', { class: 'alts' }, readParts.map((p) => h('span', { class: 'chip sent' }, `${p.category.split(' (')[0]} ${money(p.amount)}`))),
+        splitT.el,
+        h('details', {}, h('summary', {}, 'See the items it read'),
+          h('div', { class: 'items' }, readItems.map((it) => h('div', { class: 'row between small' }, h('span', {}, it.name), h('span', { class: 'muted' }, `${it.category.split(' (')[0]} · ${money(it.amount)}`)))))) : null;
+      const pick = (el, key, v, label) => h('button', { type: 'button', class: 'chip sent pickme', onclick: () => { el.value = v; el.classList.add('auto'); touched.add(key); } }, label);
+      const otherAmts = (got.amountOptions || []).filter((v) => v !== got.amount).slice(0, 4);
+      const otherDates = (got.dateOptions || []).filter((v) => v !== got.date).slice(0, 2);
+      const alts = (otherAmts.length || otherDates.length) ? h('div', { class: 'alts' },
+        h('span', { class: 'small muted' }, 'Wrong? Other numbers on the receipt:'),
+        otherAmts.map((v) => pick(fAmt, 'amount', v, money(v))),
+        otherDates.map((v) => pick(fDate, 'date', v, C.fmtDateSlash(v)))) : null;
       fill(readBox, filled.length
-        ? h('div', { class: 'notice read ok' }, h('b', {}, 'Read from the photo: '), filled.filter(Boolean).join(' · '), h('div', { class: 'small' }, 'Check the highlighted boxes and fix anything wrong.'))
+        ? h('div', { class: 'notice read ok' }, h('b', {}, 'Read from the photo: '), filled.filter(Boolean).join(' · '), h('div', { class: 'small' }, 'Check the highlighted boxes and fix anything wrong.'), alts, partsView)
         : h('div', { class: 'notice warn' }, 'Couldn\'t read this one clearly. Fill it in by hand (a flatter, brighter photo helps).'));
     } catch (e) { fill(readBox, h('div', { class: 'notice warn' }, e.message)); }
   };
@@ -813,7 +829,9 @@ function receiptForm(rc, preset = {}, onSaved = null, startFile = null, { onCanc
     inv ? h('p', { class: 'notice' }, `On invoice #${inv.number}.`) : null,
     h('div', { class: 'grid2' },
       filePicker('📷 Take photo', { accept: 'image/*', capture: 'environment', onFiles: onFile, fallback: false, hint: false }),
-      filePicker('📎 Choose file', { accept: 'image/*,application/pdf', onFiles: onFile, fallback: false })), prev, readBox,
+      filePicker('📎 Choose file', { accept: 'image/*,application/pdf', onFiles: onFile, fallback: false })),
+    h('p', { class: 'small muted' }, '📸 Best results: receipt flat, filling most of the photo, good light, no shadow.'), prev, readBox,
+    !isNew && (r.parts || []).length > 1 ? h('div', { class: 'alts' }, h('span', { class: 'small muted' }, 'Breakdown:'), r.parts.map((p) => h('span', { class: 'chip sent' }, `${p.category.split(' (')[0]} ${money(p.amount)}`))) : null,
     h('div', { class: 'grid2' }, field('Date', fDate), field('Amount ¥', fAmt)),
     h('div', { class: 'grid2' }, field('Shop / what', fVendor), field('Category', fCat)),
     field('Who pays?', fType), field('Job', fJob, 'Linking a job adds it to that job\'s invoice automatically'),
@@ -823,6 +841,24 @@ function receiptForm(rc, preset = {}, onSaved = null, startFile = null, { onCanc
       const amount = Number(fAmt.value) || 0;
       if (!amount) return toast('Enter the amount', 'bad');
       const out = { ...r, date: fDate.value, amount, vendor: fVendor.value.trim(), category: fCat.value, type: fType.value, jobId: fJob.value || null, clientId: fJob.value ? (S.byId('jobs', fJob.value)?.clientId || '') : fClient.value, notes: fNotes.value };
+      out.items = readItems; out.parts = readParts;
+      if (newFile && splitT.box.checked && readParts.length > 1) {
+        // one receipt per category, amounts scaled to what you typed as the total
+        const sum = readParts.reduce((a, p) => a + p.amount, 0) || 1;
+        let left = amount; const made = [];
+        readParts.forEach((p, i) => {
+          const amt = i === readParts.length - 1 ? left : Math.round((p.amount / sum) * amount); left -= amt;
+          made.push({ ...out, id: i === 0 ? r.id : S.uid('rc'), amount: amt, category: p.category, parts: [], items: readItems.filter((it) => it.category === p.category), notes: [out.notes, `Split from one ${out.vendor || ''} receipt (${money(amount)})`].filter(Boolean).join(' · ') });
+        });
+        for (const m of made) {
+          await S.putFile(m.id, newFile);
+          m.hasFile = true; m.mime = newFile.type; m.driveId = null; thumbs.delete(m.id);
+          m.fileName = `${m.date}_${(m.vendor || '').replace(/[^A-Za-z0-9]+/g, '') || 'receipt'}_${m.category.replace(/[^A-Za-z]+/g, '')}_${Math.round(m.amount)}.jpg`;
+          S.upsert('receipts', m);
+        }
+        closeSheet(); render(); toast(`Saved as ${made.length} receipts`); if (onSaved) made.forEach((m) => onSaved(m));
+        return;
+      }
       if (newFile) {
         await S.putFile(r.id, newFile);
         const ext = newFile.type === 'application/pdf' ? 'pdf' : 'jpg';

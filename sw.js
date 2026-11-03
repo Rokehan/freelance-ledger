@@ -1,5 +1,5 @@
 // Offline support: caches the app files. Bump VERSION on every release.
-const VERSION = 'fl-1.5.1';
+const VERSION = 'fl-1.6.1';
 const FILES = ['./', './index.html', './manifest.webmanifest', './app.css',
   './app.js', './calc.js', './layout.js', './render.js', './pdf.js', './store.js', './drive.js', './email.js', './seed.js', './github.js', './unzip.js', './ocr.js', './receipt-parse.js',
   './icon-192.png', './icon-512.png', './apple-touch-icon.png'];

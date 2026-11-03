@@ -326,3 +326,10 @@ input.auto, select.auto { border-color: var(--yellow); box-shadow: 0 0 0 3px rgb
 .notice.read.ok { background: rgb(61 255 176 / .08); border-color: rgb(61 255 176 / .35); }
 .notice.read .small { flex-basis: 100%; color: var(--muted); }
 .spin { display: inline-block; animation: spin 1s linear infinite; color: var(--neon); }
+
+.alts { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; flex-basis: 100%; margin-top: .3rem; }
+.chip.pickme { cursor: pointer; border: 0; font: inherit; font-size: .78rem; font-weight: 700; }
+.chip.pickme:hover { box-shadow: var(--glow); }
+
+.parts { flex-basis: 100%; display: grid; gap: .4rem; margin-top: .5rem; padding-top: .5rem; border-top: 1px dashed var(--line); }
+.items { display: grid; gap: .2rem; margin-top: .3rem; }
