@@ -6,7 +6,7 @@ import { readReceipt } from './ocr.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.6.1';
+const VERSION = '1.6.2';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -90,8 +90,17 @@ function closeSheet(byUser = false) {
 }
 
 // form field helpers
-const field = (label, input, hint) => h('label', { class: 'field' }, h('span', { class: 'lbl' }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
-const inp = (o = {}) => h('input', { type: 'text', ...o });
+// <label> only around a single box. Wrapping buttons in a label makes iPhones send every tap to the first button.
+const field = (label, input, hint) => {
+  const single = input instanceof Node && /^(INPUT|SELECT|TEXTAREA)$/i.test(input.tagName || '');
+  return h(single ? 'label' : 'div', { class: 'field' }, h('span', { class: 'lbl' }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
+};
+const inp = (o = {}) => {
+  const el = h('input', { type: 'text', ...o });
+  // computer: clicking anywhere on a date box opens the calendar, not just the little icon
+  if (o.type === 'date') el.addEventListener('click', () => { try { el.showPicker?.(); } catch {} });
+  return el;
+};
 const sel = (options, value, o = {}) => h('select', o, options.map(([v, t]) => h('option', { value: v, selected: String(v) === String(value) || null }, t)));
 const toggle = (label, checked, hint) => {
   const box = h('input', { type: 'checkbox', checked });

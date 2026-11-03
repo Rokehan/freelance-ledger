@@ -333,3 +333,12 @@ input.auto, select.auto { border-color: var(--yellow); box-shadow: 0 0 0 3px rgb
 
 .parts { flex-basis: 100%; display: grid; gap: .4rem; margin-top: .5rem; padding-top: .5rem; border-top: 1px dashed var(--line); }
 .items { display: grid; gap: .2rem; margin-top: .3rem; }
+
+/* v1.6.2: date boxes fit on iPhone */
+.field, .grid2 > *, .grid3 > *, .row > * { min-width: 0; }
+input[type="date"] { -webkit-appearance: none; appearance: none; display: block; min-width: 0; max-width: 100%; min-height: 2.75rem; text-align: left; cursor: pointer; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; }
+input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; filter: invert(.8); }
+.dates .seg { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); }
+.dates .seg button { padding: .5rem .3rem; touch-action: manipulation; }
+@media (max-width: 420px) { .dates .grid2 { grid-template-columns: 1fr; } }
