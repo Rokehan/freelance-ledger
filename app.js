@@ -6,7 +6,7 @@ import { readReceipt } from './ocr.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.5.0';
+const VERSION = '1.5.1';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -233,6 +233,14 @@ function tabs() {
     h('button', { class: 'fab', onclick: quickAdd, 'aria-label': 'Add' }, icon('plus')),
     t('invoices', 'file', 'Invoices'), t('receipts', 'camera', 'Receipts'));
 }
+/** Puts To + Subject at the top of a shared email so they can be copied inside Mail. */
+function withCopyHeader(mail) {
+  const ja = /[\u3040-\u30ff\u4e00-\u9faf]/.test(mail.body);
+  const note = ja ? '▲ To / Subject: copy these into the boxes above, then delete these lines ▲' : '▲ Copy To + Subject into the boxes above, then delete these lines ▲';
+  const head = [mail.to ? `To: ${mail.to}` : null, `Subject: ${mail.subject}`, note, '────────────', ''].filter((x) => x != null).join('\n');
+  return { ...mail, body: `${head}\n${mail.body}` };
+}
+
 function quickAdd() {
   openSheet('Add · 追加', h('div', { class: 'quick' },
     [['camera', 'Snap receipt', '領収書を撮る', () => snapReceipt()], ['briefcase', 'Log work', '仕事を記録', () => jobForm()], ['file', 'New invoice', '請求書', () => invoiceForm()]]
@@ -649,7 +657,7 @@ routes.invoice = (id) => {
         h('div', { class: 'small muted' }, `Attachments: ${files.map((f) => f.name).join(', ')}`),
         h('div', { class: 'row gap wrap' },
           share ? h('button', { class: 'btn', onclick: async () => {
-            try { if (mail.to) navigator.clipboard?.writeText(mail.to).catch(() => {}); await shareFiles(files, mail); if (mail.to) toast('Client address is copied. Paste it into To'); afterSend(); } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'bad'); }
+            try { if (mail.to) navigator.clipboard?.writeText(mail.to).catch(() => {}); await shareFiles(files, withCopyHeader(mail)); if (mail.to) toast('Client address is copied. Paste it into To'); afterSend(); } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'bad'); }
           } }, 'Share to Mail / Outlook') : null,
           h('button', { class: `btn ${share ? 'ghost' : ''}`, onclick: () => { files.forEach(downloadFile); } }, share ? 'Download files' : 'Download attachments'),
           h('button', { class: 'btn ghost', onclick: () => copy(mail.body, 'Email text copied') }, 'Copy text'),
