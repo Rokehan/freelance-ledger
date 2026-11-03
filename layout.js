@@ -1,6 +1,6 @@
 // Builds an A4 invoice as a list of drawing ops (units: mm, font size: pt).
 // Pure: the browser draws the ops on a canvas, tests can draw them anywhere.
-import { invoiceTotals, jobLine, fmtDate, fmtDateSlash, num } from './calc.js';
+import { invoiceTotals, jobLine, fmtDate, fmtDateSlash, fmtDates, datesOf, num } from './calc.js';
 
 const L = 18, R = 192;               // page margins (A4 = 210 x 297)
 const INK = '#1d1d1f', MUTED = '#6b6b70', RULE = '#b8b8bd', FILL = '#ececef', ACCENT = '#1f6f78';
@@ -84,7 +84,7 @@ export function invoiceOps(inv, data) {
   if (inv.clientReference) { text(L, py, `${lang === 'ja' ? '案件番号' : 'Client reference'}：${inv.clientReference}`, 9, { maxW: 100 }); py += 5; }
 
   // ---- size the tables to fit ----
-  const lines = [...tot.jobs].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((j) => jobLine(j, lang)).concat((tot.lines || []).map((l) => ({ text: `${l.description || ''}${l.date ? '  ' + fmtDateSlash(l.date) : ''}`, qty: l.qty || 1, rate: Number(l.rate) || 0, amount: Math.round((Number(l.qty) || 0) * (Number(l.rate) || 0)) }))); 
+  const lines = [...tot.jobs].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((j) => jobLine(j, lang)).concat((tot.lines || []).map((l) => ({ text: `${l.description || ''}${datesOf(l).length ? '  ' + fmtDates(datesOf(l)) : ''}`, qty: l.qty || 1, rate: Number(l.rate) || 0, amount: Math.round((Number(l.qty) || 0) * (Number(l.rate) || 0)) }))); 
   const rLines = [...tot.receipts].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((r) => ({ text: `${r.vendor || r.category || ''}${r.date ? '  ' + fmtDateSlash(r.date) : ''}`, amount: Math.round(r.amount) }));
   const sumRows = 1 + (inv.addTax ? 1 : 0) + (inv.withhold ? 1 : 0) + ((inv.addTax || inv.withhold) ? 1 : 0);
   const rows = lines.length + 1 + sumRows + (rLines.length ? rLines.length + 2 : 0) + 1;

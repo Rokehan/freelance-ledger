@@ -35,6 +35,36 @@ export function fmtDateJa(s) { if (!s) return ''; const d = parseYmd(s); return 
 export function fmtDateSlash(s) { return s ? s.replaceAll('-', '/') : ''; }
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 export function fmtDateEn(s) { if (!s) return ''; const d = parseYmd(s); return `${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()}`; }
+// ---------- multiple work dates ----------
+export function dayDiff(a, b) { return Math.round((parseYmd(b) - parseYmd(a)) / 86400000); }
+/** All days from a to b inclusive (max 92). */
+export function expandRange(a, b) {
+  if (!a) return [];
+  if (!b || b < a) return [a];
+  const out = []; const d = parseYmd(a); const end = parseYmd(b);
+  while (d <= end && out.length < 92) { out.push(ymd(d)); d.setDate(d.getDate() + 1); }
+  return out;
+}
+/** The work dates of a job or invoice line, sorted, no repeats. */
+export function datesOf(x) {
+  const d = x && Array.isArray(x.dates) && x.dates.length ? x.dates : [x && x.date].filter(Boolean);
+  return [...new Set(d)].sort();
+}
+export const isConsecutive = (ds) => ds.every((d, i) => i === 0 || dayDiff(ds[i - 1], d) === 1);
+/** 2026/10/13–15 · 2026/10/30–11/02 · 2026/10/13, 10/15, 10/20 */
+export function fmtDates(ds) {
+  if (!ds || !ds.length) return '';
+  if (ds.length === 1) return fmtDateSlash(ds[0]);
+  const [y1, m1] = ds[0].split('-');
+  const sameYear = ds.every((d) => d.startsWith(y1));
+  const md = (d) => { const [, m, dd] = d.split('-'); return `${m}/${dd}`; };
+  if (isConsecutive(ds)) {
+    const last = ds[ds.length - 1]; const [y2, m2, d2] = last.split('-');
+    if (y2 !== y1) return `${fmtDateSlash(ds[0])}–${fmtDateSlash(last)}`;
+    return `${fmtDateSlash(ds[0])}–${m2 === m1 ? d2 : md(last)}`;
+  }
+  return sameYear ? `${fmtDateSlash(ds[0])}, ${ds.slice(1).map(md).join(', ')}` : ds.map(fmtDateSlash).join(', ');
+}
 export function fmtDate(s, lang) { return lang === 'ja' ? fmtDateJa(s) : fmtDateEn(s); }
 
 // ---------- money ----------
@@ -114,20 +144,52 @@ export function jobIncome(job, data) {
   return { fee, tax, wh, income: fee + tax, inv };
 }
 
+/**
+ * Every bit of income, split per work date (a 3-day job = 3 entries of a third each).
+ * Includes jobs and custom invoice lines. Counted by the day you worked.
+ */
+export function incomeEntries(data) {
+  const out = [];
+  const push = (dates, fee, tax, wh, base) => {
+    const ds = dates.length ? dates : [];
+    const n = ds.length || 1;
+    for (const d of ds) out.push({ ...base, date: d, fee: fee / n, tax: tax / n, wh: wh / n, income: (fee + tax) / n });
+  };
+  for (const job of data.jobs.filter(alive)) {
+    const r = jobIncome(job, data);
+    push(datesOf(job), r.fee, r.tax, r.wh, { kind: 'job', item: job, inv: r.inv, lane: job.lane || 'camera', direct: !!job.direct });
+  }
+  for (const inv of data.invoices.filter(alive)) {
+    const lines = (inv.lines || []).filter((l) => l && !l.deleted);
+    if (!lines.length) continue;
+    const t = invoiceTotals(inv, data);
+    const client = data.clients.find((c) => c.id === inv.clientId);
+    for (const l of lines) {
+      const fee = Math.round((Number(l.qty) || 0) * (Number(l.rate) || 0));
+      const share = t.fees ? fee / t.fees : 0;
+      const ds = datesOf(l);
+      push(ds.length ? ds : [inv.issueDate].filter(Boolean), fee, t.tax * share, t.wh * share, { kind: 'line', item: l, inv, lane: l.lane || client?.lane || 'camera', direct: false });
+    }
+  }
+  return out;
+}
+
 /** Everything earned in one month (by work date), grouped by invoice. month = 1-12 */
 export function monthDetail(data, year, month) {
-  const jobs = data.jobs.filter((j) => alive(j) && yearOf(j.date) === year && monthOf(j.date) === month).sort((a, b) => a.date.localeCompare(b.date));
-  const invs = new Map(); const direct = []; const open = []; let total = 0;
-  for (const j of jobs) {
-    const r = jobIncome(j, data);
-    total += r.income;
-    if (r.inv) {
-      const e = invs.get(r.inv.id) || { inv: r.inv, amount: 0, jobs: [] };
-      e.amount += r.income; e.jobs.push(j); invs.set(r.inv.id, e);
-    } else if (j.direct) direct.push({ job: j, amount: r.income });
-    else open.push({ job: j, amount: r.income });
+  const es = incomeEntries(data).filter((e) => yearOf(e.date) === year && monthOf(e.date) === month);
+  const invs = new Map(); const direct = new Map(); const open = new Map(); let total = 0; const items = new Set();
+  for (const e of es) {
+    total += e.income; items.add(e.item);
+    if (e.inv) {
+      const g = invs.get(e.inv.id) || { inv: e.inv, amount: 0, jobs: [] };
+      g.amount += e.income; if (!g.jobs.includes(e.item)) g.jobs.push(e.item); invs.set(e.inv.id, g);
+    } else {
+      const m = e.direct ? direct : open;
+      const g = m.get(e.item.id) || { job: e.item, amount: 0 };
+      g.amount += e.income; m.set(e.item.id, g);
+    }
   }
-  return { total, invoices: [...invs.values()], direct, open, count: jobs.length };
+  return { total, invoices: [...invs.values()], direct: [...direct.values()], open: [...open.values()], count: items.size };
 }
 
 export const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -143,14 +205,14 @@ export function yearSummary(data, year, settings = data.settings || {}) {
   const months = Array(12).fill(0);
   let income = 0, withheld = 0, taxCharged = 0, uninvoiced = 0;
 
-  for (const job of data.jobs.filter(alive)) {
-    if (yearOf(job.date) !== year) continue;
-    const r = jobIncome(job, data);
-    if (!r.inv && !job.direct) uninvoiced += r.fee;
-    income += r.income; taxCharged += r.tax; withheld += r.wh;
-    lanes[job.lane] = (lanes[job.lane] || 0) + r.income;
-    months[monthOf(job.date) - 1] += r.income;
+  for (const e of incomeEntries(data)) {
+    if (yearOf(e.date) !== year) continue;
+    if (!e.inv && !e.direct) uninvoiced += e.fee;
+    income += e.income; taxCharged += e.tax; withheld += e.wh;
+    lanes[e.lane] = (lanes[e.lane] || 0) + e.income;
+    months[monthOf(e.date) - 1] += e.income;
   }
+  income = Math.round(income); taxCharged = Math.round(taxCharged); withheld = Math.round(withheld); uninvoiced = Math.round(uninvoiced);
 
   let expenses = 0;
   for (const r of data.receipts.filter(alive)) {
@@ -183,8 +245,7 @@ export function yearSummary(data, year, settings = data.settings || {}) {
 /** Line text for a job on an invoice. */
 export function jobLine(job, lang) {
   const desc = job.description || job.position || '';
-  const date = fmtDateSlash(job.date);
-  const label = job.dateLabel || date;
+  const label = job.dateLabel || fmtDates(datesOf(job));
   const u = UNITS[job.unit] || UNITS.day;
   const q = Number(job.qty) || 0;
   const qty = lang === 'ja' ? `${q}${u.ja}` : `${q} ${q === 1 ? u.en : u.enPl}`;

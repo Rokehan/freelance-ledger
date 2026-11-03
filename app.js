@@ -2,10 +2,11 @@ import * as C from './calc.js';
 import * as S from './store.js';
 import * as D from './drive.js';
 import { invoicePdf, invoicePreviewUrl } from './render.js';
+import { readReceipt } from './ocr.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.4.1';
+const VERSION = '1.5.0';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -70,17 +71,23 @@ const confirmBox = (msg) => window.confirm(msg);
 
 // ---------- sheet (modal form) ----------
 let sheetEl = null;
-function openSheet(title, body, actions = []) {
+let sheetOnClose = null;
+function openSheet(title, body, actions = [], { onClose = null } = {}) {
   closeSheet();
-  sheetEl = h('div', { class: 'sheet-wrap', onclick: (e) => { if (e.target === sheetEl) closeSheet(); } },
+  sheetOnClose = onClose;
+  sheetEl = h('div', { class: 'sheet-wrap', onclick: (e) => { if (e.target === sheetEl) closeSheet(true); } },
     h('div', { class: 'sheet' },
-      h('div', { class: 'sheet-head' }, h('h2', {}, title), h('button', { class: 'icon', onclick: closeSheet, 'aria-label': 'Close' }, '✕')),
+      h('div', { class: 'sheet-head' }, h('h2', {}, title), h('button', { class: 'icon', onclick: () => closeSheet(true), 'aria-label': 'Close' }, '✕')),
       h('div', { class: 'sheet-body' }, body),
       actions.length ? h('div', { class: 'sheet-actions' }, actions) : null));
   document.body.append(sheetEl);
   document.body.classList.add('noscroll');
 }
-function closeSheet() { sheetEl?.remove(); sheetEl = null; document.body.classList.remove('noscroll'); }
+function closeSheet(byUser = false) {
+  const cb = sheetOnClose; sheetOnClose = null;
+  sheetEl?.remove(); sheetEl = null; document.body.classList.remove('noscroll');
+  if (byUser === true && cb) cb();
+}
 
 // form field helpers
 const field = (label, input, hint) => h('label', { class: 'field' }, h('span', { class: 'lbl' }, label), input, hint ? h('span', { class: 'hint' }, hint) : null);
@@ -404,21 +411,71 @@ routes.jobs = () => {
           !st ? h('input', { type: 'checkbox', class: 'pick', checked: selected.has(j.id), onclick: (e) => e.stopPropagation(), onchange: (e) => { e.target.checked ? selected.add(j.id) : selected.delete(j.id); render(); } }) : h('span', { class: `lane-tag l-${j.lane}` }),
           h('div', { class: 'r-main' }, h('b', {}, j.description || j.position || j.project || 'Work'), h('small', {}, `${clientName(j.clientId)}${j.project ? ' · ' + j.project : ''}`)),
           h('div', { class: 'r-mid' }, st === 'direct' ? chip('Paid directly', 'paid') : st ? chip(`#${st.number}`, C.invoiceStatus(st, data)) : chip('Not invoiced', 'draft')),
-          h('div', { class: 'r-end' }, h('b', {}, money(C.jobFee(j))), h('small', {}, C.fmtDateEn(j.date))));
+          h('div', { class: 'r-end' }, h('b', {}, money(C.jobFee(j))), h('small', {}, C.fmtDates(C.datesOf(j)))));
       })))));
 };
 
 function newClientInline(onDone) { clientForm(null, (c) => onDone(c)); }
+
+/**
+ * Work-date picker: one day, a run of days (start → end), or separate days.
+ * onChange(dates, mode, prevCount) fires on every change.
+ */
+function datesControl(initial, mode0, onChange) {
+  let dates = initial && initial.length ? [...initial] : [C.today()];
+  let mode = mode0 || (dates.length > 1 ? (C.isConsecutive(dates) ? 'range' : 'list') : 'single');
+  const wrap = h('div', { class: 'dates' });
+  const emit = (prev) => onChange(dates, mode, prev);
+  const draw = () => {
+    const seg = h('div', { class: 'seg small' }, [['single', 'One day'], ['range', 'Run of days'], ['list', 'Separate days']].map(([k, l]) =>
+      h('button', { type: 'button', class: mode === k ? 'on' : '', onclick: () => {
+        const prev = dates.length; mode = k;
+        if (k === 'single') dates = [dates[0]];
+        else if (k === 'range') dates = C.expandRange(dates[0], dates[dates.length - 1] > dates[0] ? dates[dates.length - 1] : C.ymd(new Date(C.parseYmd(dates[0]).getTime() + 86400000)));
+        draw(); emit(prev);
+      } }, l)));
+    let body;
+    if (mode === 'single') {
+      body = inp({ type: 'date', value: dates[0], onchange: (e) => { if (e.target.value) { const prev = dates.length; dates = [e.target.value]; emit(prev); } } });
+    } else if (mode === 'range') {
+      const info = h('span', { class: 'chip sent' }, `${dates.length} days`);
+      const a = inp({ type: 'date', value: dates[0] }), b = inp({ type: 'date', value: dates[dates.length - 1] });
+      const upd = () => {
+        if (!a.value || !b.value) return;
+        const prev = dates.length;
+        dates = a.value <= b.value ? C.expandRange(a.value, b.value) : C.expandRange(b.value, a.value);
+        info.textContent = `${dates.length} day${dates.length === 1 ? '' : 's'}`; emit(prev);
+      };
+      a.onchange = upd; b.onchange = upd;
+      body = [h('div', { class: 'grid2' }, field('First day', a), field('Last day', b)), info];
+    } else {
+      const add = inp({ type: 'date' });
+      const addIt = () => { if (add.value && !dates.includes(add.value)) { const prev = dates.length; dates = [...dates, add.value].sort(); draw(); emit(prev); } };
+      add.onchange = addIt;
+      body = [h('div', { class: 'chips' }, dates.map((d) => h('span', { class: 'chip sent' }, C.fmtDateSlash(d), ' ',
+          h('button', { type: 'button', class: 'x', 'aria-label': 'Remove day', onclick: () => { if (dates.length > 1) { const prev = dates.length; dates = dates.filter((x) => x !== d); draw(); emit(prev); } } }, '×')))),
+        h('div', { class: 'row gap' }, add, h('button', { type: 'button', class: 'btn ghost small', onclick: addIt }, '+ Add day'))];
+    }
+    fill(wrap, seg, body);
+  };
+  draw();
+  return wrap;
+}
 
 function jobForm(job, preset = {}) {
   const isNew = !job;
   const j = job ? { ...job } : { id: S.uid('jb'), deleted: false, clientId: '', lane: 'camera', date: C.today(), qty: 1, unit: 'day', rate: 0, project: '', position: '', description: '', direct: false, notes: '', ...preset };
   const fClient = sel(clientOptions(), j.clientId);
   const fLane = sel(Object.entries(C.LANES).map(([k, l]) => [k, `${l.icon} ${l.en}`]), j.lane);
-  const fDate = inp({ type: 'date', value: j.date });
+  let jDates = C.datesOf(j); let jMode = j.dateMode || '';
   const fQty = inp({ type: 'number', step: '0.5', inputmode: 'decimal', value: j.qty });
   const fUnit = sel([['day', 'days'], ['hour', 'hours'], ['item', 'item(s)']], j.unit);
   const fRate = inp({ type: 'number', inputmode: 'numeric', value: j.rate });
+  const fDates = datesControl(jDates, jMode, (d, m, prev) => {
+    jDates = d; jMode = m;
+    // a 3-day run → 3 days, unless you've typed your own quantity
+    if (fUnit.value === 'day' && (Number(fQty.value) === prev || !Number(fQty.value))) { fQty.value = d.length; upd(); }
+  });
   const fProj = inp({ value: j.project, placeholder: 'e.g. Porter Air Duck' });
   const fPos = inp({ value: j.position, placeholder: 'e.g. 2nd AC' });
   const fDesc = inp({ value: j.description, placeholder: 'Shown on the invoice line, e.g. 2nd AC' });
@@ -434,12 +491,12 @@ function jobForm(job, preset = {}) {
   };
   fPos.oninput = () => { if (!fDesc.dataset.touched) fDesc.value = fPos.value; };
   fDesc.oninput = () => { fDesc.dataset.touched = '1'; };
-  const collect = () => ({ ...j, clientId: fClient.value === '__new' ? '' : fClient.value, lane: fLane.value, date: fDate.value, qty: Number(fQty.value) || 0, unit: fUnit.value, rate: Number(fRate.value) || 0, project: fProj.value.trim(), position: fPos.value.trim(), description: fDesc.value.trim() || fPos.value.trim(), direct: fDirect.box.checked, notes: fNotes.value });
+  const collect = () => ({ ...j, clientId: fClient.value === '__new' ? '' : fClient.value, lane: fLane.value, date: jDates[0], dates: jDates, dateMode: jMode, qty: Number(fQty.value) || 0, unit: fUnit.value, rate: Number(fRate.value) || 0, project: fProj.value.trim(), position: fPos.value.trim(), description: fDesc.value.trim() || fPos.value.trim(), direct: fDirect.box.checked, notes: fNotes.value });
   const inv = job ? C.invoiceForJob(job.id, data) : null;
 
   openSheet(isNew ? 'Log work' : 'Edit job', h('div', { class: 'form' },
     inv ? h('p', { class: 'notice' }, `On invoice #${inv.number}. Changes update that invoice.`) : null,
-    field('Client', fClient), h('div', { class: 'grid2' }, field('Type', fLane), field('Date worked', fDate)),
+    field('Client', fClient), field('Type', fLane), field('Dates worked', fDates),
     h('div', { class: 'grid3' }, field('Qty', fQty), field('Unit', fUnit), field('Rate ¥', fRate)),
     h('div', { class: 'row between' }, h('span', { class: 'muted' }, 'Fee'), fee),
     h('div', { class: 'grid2' }, field('Project', fProj), field('Position', fPos)),
@@ -450,7 +507,7 @@ function jobForm(job, preset = {}) {
     h('button', { class: 'btn', onclick: () => {
       const c = collect();
       if (!c.clientId) return toast('Pick a client', 'bad');
-      if (!c.date) return toast('Add the date you worked', 'bad');
+      if (!c.date) return toast('Add the days you worked', 'bad');
       S.upsert('jobs', c); closeSheet(); render(); toast(isNew ? 'Work logged' : 'Saved');
     } }, 'Save'),
   ]);
@@ -473,7 +530,7 @@ routes.invoices = () => {
 
 function invoiceForm(inv, preset = {}) {
   const isNew = !inv;
-  const base = inv ? { ...inv } : { id: S.uid('iv'), deleted: false, legacy: false, number: '', clientId: '', lang: 'ja', issueDate: C.today(), dueDate: C.endOfFollowingMonth(C.today()), project: '', position: '', jobIds: [], receiptIds: [], lines: [], addTax: true, withhold: false, status: 'draft', payments: [], note: '', ...preset };
+  const base = inv ? { ...inv, ...preset } : { id: S.uid('iv'), deleted: false, legacy: false, number: '', clientId: '', lang: 'ja', issueDate: C.today(), dueDate: C.endOfFollowingMonth(C.today()), project: '', position: '', jobIds: [], receiptIds: [], lines: [], addTax: true, withhold: false, status: 'draft', payments: [], note: '', ...preset };
   let st = { ...base, jobIds: [...base.jobIds], receiptIds: [...base.receiptIds], lines: [...(base.lines || [])] };
   const body = h('div', { class: 'form' });
 
@@ -487,6 +544,8 @@ function invoiceForm(inv, preset = {}) {
       st = { ...st, clientId: e.target.value, jobIds: [], receiptIds: [], ...(nc ? { lang: nc.lang, addTax: nc.addTax, withhold: nc.withhold } : {}) }; draw();
     } });
     const t = C.invoiceTotals(st, data);
+    const totalsView = () => { const t2 = C.invoiceTotals(st, data); return [trow('Fees', t2.fees), st.addTax ? trow('+ 10% tax', t2.tax) : null, st.withhold ? trow('− Withholding', -t2.wh) : null, t2.reimb ? trow('+ Expenses (at cost, no tax)', t2.reimb) : null, trow('Total', t2.total, true)]; };
+    const totalsBox = h('div', { class: 'totals' }, totalsView());
     const tax = toggle('Add 10% consumption tax', st.addTax); tax.box.onchange = () => { st.addTax = tax.box.checked; draw(); };
     const wh = toggle('Client withholds 10.21%', st.withhold); wh.box.onchange = () => { st.withhold = wh.box.checked; draw(); };
     const fIssue = inp({ type: 'date', value: st.issueDate, onchange: (e) => { st.issueDate = e.target.value; st.dueDate = C.endOfFollowingMonth(e.target.value); draw(); } });
@@ -497,12 +556,25 @@ function invoiceForm(inv, preset = {}) {
       field('Client', fClient),
       st.clientId ? [
         h('h4', {}, 'Invoice lines'),
-        st.lines.length ? h('div', { class: 'checks' }, st.lines.map((l, idx) => h('div', { class: 'check line-edit' },
-          h('input', { value: l.description || '', placeholder: 'Camera Assistant Shoot Day', oninput: (e) => { l.description = e.target.value; } }),
-          h('input', { type: 'number', value: l.qty || 1, min: '0', step: '0.5', class: 'mini', oninput: (e) => { l.qty = Number(e.target.value) || 0; draw(); } }),
-          h('input', { type: 'number', value: l.rate || 0, min: '0', step: '1', class: 'mini', oninput: (e) => { l.rate = Number(e.target.value) || 0; draw(); } }),
-          h('button', { class: 'icon', onclick: () => { st.lines = st.lines.filter((_, i) => i !== idx); draw(); } }, '×')))) : null,
-        h('button', { class: 'btn ghost small', onclick: () => { st.lines.push({ id: S.uid('ln'), description: '', date: st.issueDate, qty: 1, rate: 0 }); draw(); } }, '+ Add custom line'),
+        st.lines.length ? h('div', { class: 'lines' }, st.lines.map((l, idx) => {
+          const qty = h('input', { type: 'number', value: l.qty ?? 1, min: '0', step: '0.5', inputmode: 'decimal', oninput: (e) => { l.qty = Number(e.target.value) || 0; refresh(); } });
+          const total = h('b', { class: 'line-total' }, money((Number(l.qty) || 0) * (Number(l.rate) || 0)));
+          const refresh = () => { total.textContent = money((Number(l.qty) || 0) * (Number(l.rate) || 0)); fill(totalsBox, totalsView()); };
+          return h('div', { class: 'line-card' },
+            h('div', { class: 'row gap' },
+              h('input', { class: 'grow', list: 'line-presets', value: l.description || '', placeholder: 'e.g. Camera Assistant Shoot Day', oninput: (e) => { l.description = e.target.value; } }),
+              h('button', { type: 'button', class: 'icon', 'aria-label': 'Remove line', onclick: () => { st.lines = st.lines.filter((_, i) => i !== idx); draw(); } }, '×')),
+            h('div', { class: 'grid3' },
+              field('Qty', qty),
+              field('Rate ¥', h('input', { type: 'number', value: l.rate || '', min: '0', step: '1', inputmode: 'numeric', placeholder: '0', oninput: (e) => { l.rate = Number(e.target.value) || 0; refresh(); } })),
+              h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Line total'), total)),
+            field('Dates', datesControl(C.datesOf(l).length ? C.datesOf(l) : [st.issueDate], l.dateMode, (d, m, prev) => {
+              l.dates = d; l.date = d[0]; l.dateMode = m;
+              if (Number(l.qty) === prev) { l.qty = d.length; qty.value = d.length; refresh(); }
+            })));
+        })) : null,
+        h('datalist', { id: 'line-presets' }, ['Camera Assistant Shoot Day', 'Camera Assistant Prep Day', 'Camera Assistant Travel Day', 'Camera Assistant Wrap Day', 'Transcoding', 'Overtime', 'Kit rental', '1st AC Shoot Day', '2nd AC Shoot Day', 'DIT / Data wrangling'].map((v) => h('option', { value: v }))),
+        h('button', { class: 'btn ghost small', onclick: () => { st.lines.push({ id: S.uid('ln'), description: '', date: st.issueDate, dates: [st.issueDate], qty: 1, rate: 0 }); draw(); } }, '+ Add line'),
         h('p', { class: 'small muted' }, 'Description, quantity and rate are editable for every invoice. Examples: Camera Assistant Shoot Day, travel day, prep day, transcoding.'),
         h('h4', {}, 'Work on this invoice'),
         openJobs.length ? h('div', { class: 'checks' }, openJobs.map((j) => h('label', { class: 'check' },
@@ -515,20 +587,21 @@ function invoiceForm(inv, preset = {}) {
             }
             draw();
           } }),
-          h('span', { class: 'grow' }, `${C.fmtDateSlash(j.date)} · ${j.description || j.position}`), h('b', {}, money(C.jobFee(j)))))) : h('p', { class: 'small muted' }, 'No uninvoiced work for this client. Log it in Jobs first (or invoice expenses only).'),
+          h('span', { class: 'grow' }, `${C.fmtDates(C.datesOf(j))} · ${j.description || j.position}`), h('b', {}, money(C.jobFee(j)))))) : h('p', { class: 'small muted' }, 'No uninvoiced work for this client. Log it in Jobs first (or invoice expenses only).'),
         h('h4', {}, 'Expenses to be paid back ', help('立替金')),
         openRc.length ? h('div', { class: 'checks' }, openRc.map((r) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: st.receiptIds.includes(r.id), onchange: (e) => { st.receiptIds = e.target.checked ? [...st.receiptIds, r.id] : st.receiptIds.filter((x) => x !== r.id); draw(); } }),
           h('span', { class: 'grow' }, `${C.fmtDateSlash(r.date)} · ${r.vendor || r.category}`, r.hasFile ? ' 📎' : ''), h('b', {}, money(r.amount))))) : h('p', { class: 'small muted' }, 'No reimbursable receipts yet.'),
-        h('button', { class: 'btn ghost small', onclick: () => receiptForm(null, { clientId: st.clientId, type: 'reimb' }, (r) => { st.receiptIds = [...new Set([...st.receiptIds, r.id])]; draw(); }) }, '+ Add receipt / photo'),
+        h('div', { class: 'row gap wrap' },
+          h('button', { class: 'btn small', onclick: () => { const back = () => invoiceForm(isNew ? null : inv, { ...st }); snapReceipt({ clientId: st.clientId, type: 'reimb' }, (r) => invoiceForm(isNew ? null : inv, { ...st, receiptIds: [...new Set([...st.receiptIds, r.id])] }), back); } }, '📷 Snap receipt'),
+          h('button', { class: 'btn ghost small', onclick: () => { const back = () => invoiceForm(isNew ? null : inv, { ...st }); receiptForm(null, { clientId: st.clientId, type: 'reimb' }, (r) => invoiceForm(isNew ? null : inv, { ...st, receiptIds: [...new Set([...st.receiptIds, r.id])] }), null, { onCancel: back }); } }, '+ Add receipt (photo or file)')),
+        h('p', { class: 'small muted' }, 'Receipts are billed back at what you paid. No extra 10% is added: the price already includes tax.'),
         h('div', { class: 'grid2' }, field('Project (件名)', inp({ value: st.project, oninput: (e) => { st.project = e.target.value; } })), field('Client reference / 案件NO', inp({ value: st.clientReference || '', placeholder: 'e.g. PD0442026', oninput: (e) => { st.clientReference = e.target.value; } })), field('Position', inp({ value: st.position, oninput: (e) => { st.position = e.target.value; } }))),
         h('div', { class: 'grid2' }, field('Language', sel([['ja', '日本語'], ['en', 'English']], st.lang, { onchange: (e) => { st.lang = e.target.value; } })), field('Invoice no.', inp({ value: st.number || '(auto)', disabled: true }))),
         h('div', { class: 'grid2' }, field('Issue date', fIssue), field('Due date', fDue, 'End of next month')),
         tax.el, h('div', { class: 'help-row' }, help('消費税')), wh.el, h('div', { class: 'help-row' }, help('源泉')),
         field('Note on invoice (optional)', inp({ value: st.note, oninput: (e) => { st.note = e.target.value; } })),
-        h('div', { class: 'totals' },
-          trow('Fees', t.fees), st.addTax ? trow('+ 10% tax', t.tax) : null, st.withhold ? trow('− Withholding', -t.wh) : null,
-          t.reimb ? trow('+ Expenses', t.reimb) : null, trow('Total', t.total, true)),
+        totalsBox,
       ] : h('p', { class: 'small muted' }, 'Pick who this invoice is for.'));
   };
   draw();
@@ -577,7 +650,7 @@ routes.invoice = (id) => {
         h('div', { class: 'row gap wrap' },
           share ? h('button', { class: 'btn', onclick: async () => {
             try { if (mail.to) navigator.clipboard?.writeText(mail.to).catch(() => {}); await shareFiles(files, mail); if (mail.to) toast('Client address is copied. Paste it into To'); afterSend(); } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'bad'); }
-          } }, 'Share to Outlook') : null,
+          } }, 'Share to Mail / Outlook') : null,
           h('button', { class: `btn ${share ? 'ghost' : ''}`, onclick: () => { files.forEach(downloadFile); } }, share ? 'Download files' : 'Download attachments'),
           h('button', { class: 'btn ghost', onclick: () => copy(mail.body, 'Email text copied') }, 'Copy text'),
           !share ? h('a', { class: 'btn ghost', href: mailtoLink(mail) }, 'Open mail app') : null),
@@ -600,6 +673,10 @@ routes.invoice = (id) => {
       h('div', { class: 'small muted' }, `Issued ${C.fmtDateSlash(inv.issueDate)} · due ${C.fmtDateSlash(inv.dueDate)}${inv.sentDate && inv.status !== 'draft' ? ' · sent ' + C.fmtDateSlash(inv.sentDate) : ''}`)),
     h('div', { class: 'row gap wrap' },
       h('button', { class: 'btn', onclick: () => prepare('invoice') }, '✉️ Email invoice'),
+      h('button', { class: 'btn ghost', onclick: () => {
+        if (inv.status !== 'draft' && !confirmBox('This invoice was already sent. Add a receipt anyway? You\'ll need to send the updated invoice again.')) return;
+        snapReceipt({ clientId: inv.clientId, type: 'reimb' }, (r) => { inv.receiptIds = [...new Set([...(inv.receiptIds || []), r.id])]; S.upsert('invoices', inv); toast('Receipt added to the invoice'); });
+      } }, '📷 Add receipt'),
       (st === 'overdue' || st === 'sent' || st === 'partial') ? h('button', { class: 'btn ghost', onclick: () => prepare('reminder') }, 'Reminder email') : null,
       h('button', { class: 'btn ghost', onclick: async () => { try { downloadFile(await invoicePdf(inv, data)); } catch (e) { toast(e.message, 'bad'); } } }, 'Download PDF'),
       D.isConnected() ? h('button', { class: 'btn ghost', onclick: async () => { try { await D.saveInvoicePdf(inv, await invoicePdf(inv, data)); inv.pdfFor = inv.updatedAt; S.saveQuiet(); render(); toast('Saved to Drive'); } catch (e) { toast(e.message, 'bad'); } } }, 'Save to Drive') : null),
@@ -675,7 +752,7 @@ async function compressImage(file) {
   } catch { return file; }
 }
 
-function receiptForm(rc, preset = {}, onSaved = null, startFile = null) {
+function receiptForm(rc, preset = {}, onSaved = null, startFile = null, { onCancel = null } = {}) {
   const isNew = !rc;
   const r = rc ? { ...rc } : { id: S.uid('rc'), deleted: false, date: C.today(), amount: '', vendor: '', category: 'Taxi', type: 'reimb', jobId: '', clientId: '', notes: '', hasFile: false, ...preset };
   let newFile = null;
@@ -686,6 +763,26 @@ function receiptForm(rc, preset = {}, onSaved = null, startFile = null) {
     newFile = await compressImage(f);
     newFile.__name = f.name;
     fill(prev, newFile.type.startsWith('image/') ? h('img', { src: URL.createObjectURL(newFile) }) : h('span', {}, f.name));
+    if (newFile.type.startsWith('image/') && data.settings.autoReadReceipts !== false) autoRead(newFile);
+  };
+  // ---- auto-read the photo (on this device) ----
+  const touched = new Set();
+  const readBox = h('div');
+  const autoRead = async (blob) => {
+    const line = h('span', {}, 'Reading the receipt…');
+    fill(readBox, h('div', { class: 'notice read' }, h('span', { class: 'spin' }, '◌'), line));
+    try {
+      const got = await readReceipt(blob, (t) => { line.textContent = t; });
+      const filled = [];
+      const set = (key, el, v, label) => { if (v == null || v === '' || touched.has(key)) return; el.value = v; el.classList.add('auto'); filled.push(label); };
+      set('amount', fAmt, got.amount, `${money(got.amount)}${got.amountSure ? '' : ' (?)'}`);
+      set('date', fDate, got.date, got.date ? C.fmtDateSlash(got.date) : '');
+      set('vendor', fVendor, got.vendor, got.vendor);
+      if (got.category && CATS.includes(got.category)) set('category', fCat, got.category, got.category);
+      fill(readBox, filled.length
+        ? h('div', { class: 'notice read ok' }, h('b', {}, 'Read from the photo: '), filled.filter(Boolean).join(' · '), h('div', { class: 'small' }, 'Check the highlighted boxes and fix anything wrong.'))
+        : h('div', { class: 'notice warn' }, 'Couldn\'t read this one clearly. Fill it in by hand (a flatter, brighter photo helps).'));
+    } catch (e) { fill(readBox, h('div', { class: 'notice warn' }, e.message)); }
   };
   const fDate = inp({ type: 'date', value: r.date });
   const fAmt = inp({ type: 'number', inputmode: 'numeric', value: r.amount, placeholder: '¥' });
@@ -697,13 +794,18 @@ function receiptForm(rc, preset = {}, onSaved = null, startFile = null) {
   const fClient = sel(clientOptions(false).map(([v, t]) => [v, v ? t : 'No client']), r.clientId);
   const fNotes = h('textarea', { rows: 2 }, r.notes || '');
   const inv = rc ? C.invoiceForReceipt(rc.id, data) : null;
+  for (const [k, el] of [['amount', fAmt], ['date', fDate], ['vendor', fVendor], ['category', fCat]]) {
+    el.addEventListener('input', () => { touched.add(k); el.classList.remove('auto'); });
+    el.addEventListener('change', () => { touched.add(k); el.classList.remove('auto'); });
+  }
+  if (isNew && !preset.category) touched.delete('category');
   if (startFile) setTimeout(() => onFile([startFile]), 0);
 
   openSheet(isNew ? 'Add receipt' : 'Edit receipt', h('div', { class: 'form' },
     inv ? h('p', { class: 'notice' }, `On invoice #${inv.number}.`) : null,
     h('div', { class: 'grid2' },
       filePicker('📷 Take photo', { accept: 'image/*', capture: 'environment', onFiles: onFile, fallback: false, hint: false }),
-      filePicker('📎 Choose file', { accept: 'image/*,application/pdf', onFiles: onFile, fallback: false })), prev,
+      filePicker('📎 Choose file', { accept: 'image/*,application/pdf', onFiles: onFile, fallback: false })), prev, readBox,
     h('div', { class: 'grid2' }, field('Date', fDate), field('Amount ¥', fAmt)),
     h('div', { class: 'grid2' }, field('Shop / what', fVendor), field('Category', fCat)),
     field('Who pays?', fType), field('Job', fJob, 'Linking a job adds it to that job\'s invoice automatically'),
@@ -717,16 +819,16 @@ function receiptForm(rc, preset = {}, onSaved = null, startFile = null) {
         await S.putFile(r.id, newFile);
         const ext = newFile.type === 'application/pdf' ? 'pdf' : 'jpg';
         out.hasFile = true; out.mime = newFile.type; out.driveId = null; thumbs.delete(r.id);
-        out.fileName = `${out.date}_${(out.vendor || out.category).replace(/[^A-Za-z0-9]+/g, '') || 'receipt'}_${Math.round(amount)}.${ext}`;
+        out.fileName = `${out.date}_${(out.vendor || '').replace(/[^A-Za-z0-9]+/g, '') || out.category.replace(/[^A-Za-z0-9]+/g, '') || 'receipt'}_${Math.round(amount)}.${ext}`;
       }
       // auto-add to the job's invoice if it's still a draft
       if (isNew && out.type === 'reimb' && out.jobId) {
         const ji = C.invoiceForJob(out.jobId, data);
         if (ji && ji.status === 'draft' && !ji.receiptIds.includes(out.id)) { ji.receiptIds.push(out.id); S.upsert('invoices', ji); }
       }
-      S.upsert('receipts', out); if (onSaved) onSaved(out); closeSheet(); render(); toast('Receipt saved');
+      S.upsert('receipts', out); closeSheet(); render(); toast('Receipt saved'); if (onSaved) onSaved(out);
     } }, 'Save'),
-  ]);
+  ], { onClose: onCancel });
 }
 
 // =====================================================================
@@ -809,11 +911,13 @@ routes.settings = () => {
   const s = data.settings;
   const rate = inp({ type: 'number', step: '1', value: Math.round((s.setAsideRate ?? 0.15) * 100) });
   const sal = inp({ type: 'number', value: s.salaryMonthly || '' });
+  const auto = toggle('Read receipt photos automatically', s.autoReadReceipts !== false, 'Fills in amount, date, shop and category. Runs on this device: photos aren\'t sent anywhere.');
   return h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Tax settings'),
     h('div', { class: 'card form' },
       field('Set-aside rate %', rate, '15% fits a ~¥300k/month salary (5% income tax band + 10% resident tax). Use 20% if your salary goes above ~¥5M/year.'),
       field('Capsule salary per month ¥', sal, 'Only used for the explanation. Update from your 源泉徴収票.'),
-      h('button', { class: 'btn', onclick: () => { S.setSettings({ setAsideRate: (Number(rate.value) || 15) / 100, salaryMonthly: Number(sal.value) || 0 }); toast('Saved'); } }, 'Save')),
+      auto.el,
+      h('button', { class: 'btn', onclick: () => { S.setSettings({ setAsideRate: (Number(rate.value) || 15) / 100, salaryMonthly: Number(sal.value) || 0, autoReadReceipts: auto.box.checked }); toast('Saved'); } }, 'Save')),
     h('p', { class: 'small muted' }, '⚠️ This app gives estimates, not tax advice. Have the tax office (or a 税理士) sanity-check your first return.'));
 };
 
@@ -890,12 +994,16 @@ routes.email = () => {
       h('p', {}, h('b', {}, 'There\'s nothing to link.'), ' The app makes the invoice PDF + receipts and hands them to your ', h('b', {}, 'Outlook app'), ', which is signed in to ', data.profile.email || 'your Hotmail', '. You check it and press send in Outlook.'),
       done ? h('p', { class: 'notice' }, '✓ Email is set up on this device.') : null),
     h('div', { class: 'card guide' },
-      h('h3', {}, '📱 On your phone (best)'),
+      h('h3', {}, '🍎 iPhone Mail app'),
+      step(1, 'Add your Hotmail to Mail (one time)', p_('iPhone ', h('b', {}, 'Settings → Apps → Mail → Mail Accounts → Add Account → Outlook.com'), ', sign in with ', h('b', {}, data.profile.email || 'your Hotmail'), '. (Older iOS: Settings → Mail → Accounts.)')),
+      step(2, 'Send an invoice', p_('Invoice → ', h('b', {}, '✉️ Email invoice'), ' → ', h('b', {}, 'Share to Mail / Outlook'), ' → tap ', h('b', {}, 'Mail'), '. The PDF + receipts are attached and the message is written. Paste the client\'s address into To (it\'s already copied). If the subject is blank, go back and tap Copy next to Subject.')),
+      step(3, 'Send from the right address', p_('In Mail, tap the ', h('b', {}, 'From'), ' line and pick your Hotmail if you have more than one account.')),
+      h('h3', {}, '📱 Outlook app (alternative)'),
       step(1, 'Install Outlook', p_('Free from Microsoft.'), h('div', { class: 'row gap wrap' }, linkBtn('https://apps.apple.com/app/microsoft-outlook/id951937596', 'App Store'), linkBtn('https://play.google.com/store/apps/details?id=com.microsoft.office.outlook', 'Google Play'))),
       step(2, 'Sign in with your Hotmail', p_('Open Outlook → Add account → ', h('b', {}, data.profile.email || 'your Hotmail'), '. Send yourself a normal email to check it works.')),
       step(3, 'Send a test from this app', p_('Tap below and choose ', h('b', {}, 'Outlook'), ' in the share menu. Your own address is copied: tap To, paste, send.'), h('button', { class: 'btn small', onclick: test }, 'Send test to myself')),
       step(4, 'Outlook not in the share menu?', p_('iPhone: scroll the row of app icons to the end → ', h('b', {}, 'More'), ' → Edit → add Outlook. Android: it\'s in the list. Search "Outlook".')),
-      step(5, 'For real invoices', p_('Invoice → ', h('b', {}, '✉️ Email invoice'), ' → ', h('b', {}, 'Share to Outlook'), '. PDF, receipts and the message text are filled in. Paste the client\'s address (already copied). If the subject is blank, go back and tap Copy next to Subject. Send, then tap ', h('b', {}, 'Mark sent'), ' in the app.'))),
+      step(5, 'For real invoices', p_('Invoice → ', h('b', {}, '✉️ Email invoice'), ' → ', h('b', {}, 'Share to Mail / Outlook'), '. PDF, receipts and the message text are filled in. Paste the client\'s address (already copied). If the subject is blank, go back and tap Copy next to Subject. Send, then tap ', h('b', {}, 'Mark sent'), ' in the app.'))),
     h('div', { class: 'card guide' },
       h('h3', {}, '💻 On your computer'),
       step(1, 'Get the files', p_('Invoice → ✉️ Email invoice → ', h('b', {}, 'Download files'), '. The PDF + receipts land in Downloads.')),
@@ -1060,10 +1168,10 @@ if (D.getClientId()) D.preload();
 if (localStorage.getItem('fl_updating_to') === VERSION) { localStorage.removeItem('fl_updating_to'); setTimeout(() => toast(`Updated to v${VERSION} ✓`), 600); }
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 /** Opens the camera straight away, then the receipt form with the photo in it. */
-function snapReceipt(preset = {}, onSaved = null) {
+function snapReceipt(preset = {}, onSaved = null, onCancel = null) {
   const i = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'vh' });
   document.body.append(i);
-  i.addEventListener('change', () => { const f = i.files?.[0]; i.remove(); if (f) receiptForm(null, preset, onSaved, f); });
+  i.addEventListener('change', () => { const f = i.files?.[0]; i.remove(); if (f) receiptForm(null, preset, onSaved, f, { onCancel }); });
   i.click();
   setTimeout(() => i.remove(), 120000);
 }
