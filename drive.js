@@ -19,8 +19,10 @@ const subs = new Set();
 export const onDrive = (fn) => { subs.add(fn); return () => subs.delete(fn); };
 const set = (status, message = '') => { state.status = status; state.message = message; subs.forEach((f) => f()); };
 
-let sharedId = ''; // from config.json on the site, so new devices don't need to paste it
-export const setSharedClientId = (v) => { sharedId = (v || '').trim(); };
+// Built-in Google Client ID (public identifier, not a secret). config.json can override it.
+const BUILT_IN_ID = '109860717713-sm9j7n830bcb0b5cvovbaaufl6q56lde.apps.googleusercontent.com';
+let sharedId = BUILT_IN_ID;
+export const setSharedClientId = (v) => { sharedId = (v || '').trim() || BUILT_IN_ID; };
 export const getClientId = () => localStorage.getItem(CID_KEY) || sharedId || '';
 export const isShared = (v = getClientId()) => !!v && v === sharedId;
 export const setClientId = (v) => { localStorage.setItem(CID_KEY, v.trim()); client = null; };

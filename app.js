@@ -5,7 +5,7 @@ import { invoicePdf, invoicePreviewUrl } from './render.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.4.0';
+const VERSION = '1.4.1';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -846,7 +846,7 @@ routes.drive = () => {
       h('div', { class: 'row between' }, h('b', {}, D.isConnected() ? '✅ Connected' : data.drive.lastSync ? '🟡 Set up, sign in to sync' : '⚪ Not set up yet'), h('span', { class: 'small muted' }, `Last sync: ${last}`)),
       D.state.message && D.state.status === 'error' ? h('p', { class: 'notice bad' }, D.state.message) : null,
       h('div', { class: 'form' },
-        field('Google Client ID', cid),
+        D.isShared() ? null : field('Google Client ID', cid),
         h('div', { class: 'row gap wrap' },
           h('button', { class: 'btn ghost', onclick: () => { if (!/\.apps\.googleusercontent\.com$/.test(cid.value.trim())) return toast('That doesn\'t look like a Client ID (should end in .apps.googleusercontent.com)', 'bad'); D.setClientId(cid.value); D.preload(); toast('Client ID saved'); render(); } }, 'Save'),
           set && !D.isShared() ? h('button', { class: 'btn ghost', onclick: async (e) => {
@@ -864,7 +864,7 @@ routes.drive = () => {
           D.isConnected() ? h('button', { class: 'btn ghost', onclick: () => { D.disconnect(); render(); } }, 'Disconnect') : null,
           h('button', { class: 'btn ghost bad', onclick: signOutDevice }, 'Sign out of this device'),
           data.drive.lastSync ? h('a', { class: 'btn ghost', href: 'https://drive.google.com/drive/search?q=Freelance%20Ledger', target: '_blank', rel: 'noopener' }, 'Open Drive ↗') : null))),
-    data.drive.lastSync ? h('details', {}, h('summary', {}, 'Show the setup guide again'), guide) : guide);
+    h('details', {}, h('summary', {}, 'Advanced: Google setup details'), D.isShared() ? p_('Sign-in is built into the app. Nothing to paste on any device.') : null, D.isShared() ? field('Google Client ID (override)', cid) : null, guide));
 };
 
 routes.email = () => {
