@@ -81,9 +81,10 @@ export function invoiceOps(inv, data) {
   let py = ay + 22;
   if (inv.project) { text(L, py, `${t.project}：${inv.project}`, 9, { maxW: 100 }); py += 5; }
   if (inv.position) { text(L, py, `${t.position}：${inv.position}`, 9, { maxW: 100 }); py += 5; }
+  if (inv.clientReference) { text(L, py, `${lang === 'ja' ? '案件番号' : 'Client reference'}：${inv.clientReference}`, 9, { maxW: 100 }); py += 5; }
 
   // ---- size the tables to fit ----
-  const lines = [...tot.jobs].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((j) => jobLine(j, lang));
+  const lines = [...tot.jobs].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((j) => jobLine(j, lang)).concat((tot.lines || []).map((l) => ({ text: `${l.description || ''}${l.date ? '  ' + fmtDateSlash(l.date) : ''}`, qty: l.qty || 1, rate: Number(l.rate) || 0, amount: Math.round((Number(l.qty) || 0) * (Number(l.rate) || 0)) }))); 
   const rLines = [...tot.receipts].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((r) => ({ text: `${r.vendor || r.category || ''}${r.date ? '  ' + fmtDateSlash(r.date) : ''}`, amount: Math.round(r.amount) }));
   const sumRows = 1 + (inv.addTax ? 1 : 0) + (inv.withhold ? 1 : 0) + ((inv.addTax || inv.withhold) ? 1 : 0);
   const rows = lines.length + 1 + sumRows + (rLines.length ? rLines.length + 2 : 0) + 1;

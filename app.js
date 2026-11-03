@@ -5,7 +5,7 @@ import { invoicePdf, invoicePreviewUrl } from './render.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.3.0';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -28,6 +28,32 @@ function h(tag, attrs = {}, ...kids) {
 function fill(el, ...kids) {
   el.replaceChildren(...kids.flat(Infinity).filter((k) => k != null && k !== false).map((k) => (k instanceof Node ? k : document.createTextNode(String(k)))));
 }
+/**
+ * File picker that works everywhere: big tap/click zone + drag & drop + a plain fallback input.
+ * (Hidden inputs inside labels are unreliable in some browsers, so we click it ourselves.)
+ */
+function filePicker(label, { accept = '', multiple = false, onFiles, fallback = true } = {}) {
+  const make = (cls) => {
+    const i = h('input', { type: 'file', class: cls, accept: accept || null, multiple: multiple || null });
+    i.addEventListener('change', () => { const f = [...(i.files || [])]; i.value = ''; if (f.length) onFiles(f); });
+    return i;
+  };
+  const hidden = make('vh');
+  const zone = h('div', { class: 'filebtn', role: 'button', tabindex: '0' }, label, h('small', { class: 'drop-hint' }, 'or drag the file here'));
+  zone.addEventListener('click', () => hidden.click());
+  zone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); hidden.click(); } });
+  zone.addEventListener('dragenter', (e) => { e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; zone.classList.add('over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+  zone.addEventListener('drop', (e) => { e.preventDefault(); e.stopPropagation(); zone.classList.remove('over'); const f = [...(e.dataTransfer?.files || [])]; if (f.length) onFiles(f); });
+  return h('div', { class: 'picker' }, zone, hidden,
+    fallback ? h('details', { class: 'picker-fallback' }, h('summary', {}, 'Button not working?'), h('p', { class: 'small muted' }, 'Use this plain picker instead:'), make('plain')) : null);
+}
+// Stop the browser opening a file if it's dropped outside a drop zone.
+window.addEventListener('dragover', (e) => e.preventDefault());
+window.addEventListener('drop', (e) => e.preventDefault());
+let busy = false; // true while an update is being installed: no auto re-render
+
 const chip = (text, kind = '') => h('span', { class: `chip ${kind}` }, text);
 const money = C.yen;
 
@@ -90,22 +116,90 @@ const routes = {};
 let current = '';
 function go(hash) { location.hash = hash; }
 window.addEventListener('hashchange', render);
+// ---------- icons (line icons, inline SVG) ----------
+const ICONS = {
+  home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
+  briefcase: '<rect x="2.5" y="7" width="19" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M2.5 12.5h19"/>',
+  file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
+  camera: '<path d="M22 18a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h3l2-3h6l2 3h3a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="3.6"/>',
+  users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>',
+  id: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="11" r="2.5"/><path d="M5.5 17a3.5 3.5 0 0 1 7 0M15 9.5h3.5M15 13h3.5"/>',
+  percent: '<path d="M19 5 5 19"/><circle cx="6.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="17.5" r="2.5"/>',
+  cloud: '<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>',
+  mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 6-10 7L2 6"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/>',
+  archive: '<path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/>',
+  book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V2H6.5A2.5 2.5 0 0 0 4 4.5v15A2.5 2.5 0 0 0 6.5 22H20v-5"/>',
+  sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  sync: '<path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/>',
+  chevron: '<path d="m9 18 6-6-6-6"/>',
+  yen: '<path d="M6 3l6 8 6-8M12 11v10M7 13h10M7 17h10"/>',
+};
+const icon = (name, cls = '') => h('span', { class: `ic ${cls}`, html: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name] || ''}</svg>` });
+
+const NAV = [['home', 'home', 'Dashboard', '収支'], ['jobs', 'briefcase', 'Jobs', '仕事'], ['invoices', 'file', 'Invoices', '請求書'], ['receipts', 'camera', 'Receipts', '領収書']];
+const NAV2 = [['clients', 'users', 'Clients', '取引先'], ['profile', 'id', 'My details', '自分'], ['settings', 'percent', 'Tax settings', '税金'], ['drive', 'cloud', 'Google Drive', '同期'], ['email', 'mail', 'Email setup', 'メール'], ['updates', 'upload', 'App updates', '更新'], ['data', 'archive', 'Backup', '保存'], ['help', 'book', 'Glossary', '用語集']];
+const activeTab = () => ({ invoice: 'invoices' }[current] || current);
+const initials = () => (data.profile.signatureEn || data.profile.nameEn || '¥ ¥').split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+const pageHead = (en, ja, ...right) => h('div', { class: 'pagehead' }, h('div', {}, h('h1', {}, en), ja ? h('div', { class: 'ja-sub' }, ja) : null), h('div', { class: 'row gap wrap' }, right));
+const backLink = () => h('a', { href: '#more', class: 'back m-only' }, '‹ Settings');
+
 function render() {
   const [name, arg] = (location.hash.slice(1) || 'home').split('/');
   current = name;
   const view = (routes[name] || routes.home)(arg);
-  fill($app, header(), h('main', {}, view), tabs());
+  fill($app, sidebar(), h('div', { class: 'shell' }, header(), syncBar(), h('main', {}, view)), tabs());
 }
-S.onChange(() => { if (!sheetEl) render(); scheduleSync(); });
-D.onDrive(() => { const p = document.querySelector('.sync-pill'); if (p) p.replaceWith(syncPill()); });
+S.onChange(() => { if (!sheetEl && !busy) render(); scheduleSync(); });
+D.onDrive(() => {
+  document.querySelectorAll('.sync-pill').forEach((p) => p.replaceWith(syncPill()));
+  document.querySelectorAll('.syncbar-slot').forEach((p) => p.replaceWith(syncBar()));
+});
+const ago = (iso) => {
+  if (!iso) return 'never';
+  const m = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (m < 1) return 'just now'; if (m < 60) return `${m} min ago`;
+  const hr = Math.round(m / 60); if (hr < 24) return `${hr}h ago`;
+  return `${Math.round(hr / 24)} days ago`;
+};
+/** Big "tap to sync" bar whenever Drive is set up but this device isn't signed in right now. */
+function syncBar() {
+  if (!D.getClientId() || D.isConnected()) return h('div', { class: 'syncbar-slot' });
+  const syncing = D.state.status === 'syncing';
+  return h('div', { class: 'syncbar-slot' }, h('button', { class: 'syncbar', onclick: syncTap, disabled: syncing || null },
+    icon('cloud'), h('span', { class: 'grow' }, h('b', {}, syncing ? 'Syncing…' : 'Tap to sync with Google Drive'),
+      h('small', {}, data.drive.lastSync ? `This device last synced ${ago(data.drive.lastSync)}. Sync before you change anything.` : 'Gets your data from your other devices.')),
+    h('span', { class: 'go' }, syncing ? '…' : 'Sync')));
+}
+
+function sidebar() {
+  const a = activeTab();
+  const item = ([k, ic, en, ja]) => h('a', { class: `nav ${a === k ? 'on' : ''}`, href: `#${k}` }, icon(ic), h('span', { class: 'grow' }, en), h('small', {}, ja));
+  return h('aside', { class: 'side' },
+    h('a', { class: 'brand', href: '#home' }, h('span', { class: 'logo' }, '¥'), h('div', {}, h('b', {}, 'FREELANCE LEDGER'), h('small', {}, 'フリーランス台帳'))),
+    h('button', { class: 'btn block', onclick: quickAdd }, icon('plus'), 'New'),
+    h('nav', {}, NAV.map(item)),
+    h('div', { class: 'side-label' }, 'SETTINGS · 設定'),
+    h('nav', {}, NAV2.map(item)),
+    h('div', { class: 'grow' }),
+    setupCard('side'),
+    h('a', { class: 'me', href: '#profile' }, h('span', { class: 'avatar' }, initials()),
+      h('div', { class: 'grow' }, h('b', {}, data.profile.signatureEn || 'Your name'), h('small', {}, `v${VERSION}`))));
+}
 
 function header() {
-  return h('header', { class: 'top' }, h('div', { class: 'brand' }, h('span', { class: 'logo' }, '¥'), 'Freelance Ledger'), syncPill());
+  return h('header', { class: 'top' },
+    h('a', { class: 'avatar m-only', href: '#profile', 'aria-label': 'My details' }, initials()),
+    h('a', { class: 'brand m-only', href: '#home' }, h('span', { class: 'logo sm' }, '¥'), h('b', {}, 'LEDGER')),
+    h('div', { class: 'grow' }),
+    syncPill(),
+    h('a', { class: 'iconbtn m-only', href: '#more', 'aria-label': 'Settings' }, icon('sliders')));
 }
 function syncPill() {
   const st = D.state.status;
   const label = !D.getClientId() ? 'Drive off' : st === 'syncing' ? 'Syncing…' : st === 'ok' ? (data.dirty ? 'Sync' : 'Synced') : st === 'error' ? 'Sync error' : 'Sync';
-  return h('button', { class: `sync-pill ${st} ${data.dirty ? 'dirty' : ''}`, onclick: syncTap }, label);
+  return h('button', { class: `sync-pill ${st} ${data.dirty ? 'dirty' : ''}`, onclick: syncTap }, icon('sync'), label);
 }
 async function syncTap() {
   if (!D.getClientId()) { go('drive'); return; }
@@ -118,71 +212,85 @@ let syncTimer = null;
 function scheduleSync() {
   clearTimeout(syncTimer);
   if (!D.isConnected()) return;
-  syncTimer = setTimeout(() => D.sync().then(() => { if (!sheetEl) render(); }).catch(() => {}), 4000);
+  syncTimer = setTimeout(() => D.sync().then(() => { if (!sheetEl && !busy) render(); }).catch(() => {}), 4000);
 }
 
 function tabs() {
-  const t = [['home', '📊', 'Money'], ['jobs', '🎬', 'Jobs'], ['invoices', '🧾', 'Invoices'], ['receipts', '📸', 'Receipts'], ['more', '⚙️', 'More']];
-  const active = { invoice: 'invoices', clients: 'more', client: 'more', profile: 'more', settings: 'more', drive: 'more', help: 'more', data: 'more', email: 'more', updates: 'more' }[current] || current;
-  return h('nav', { class: 'tabs' }, t.map(([k, i, l]) => h('a', { href: `#${k}`, class: active === k ? 'on' : '' }, h('span', { class: 'ti' }, i), h('span', {}, l))));
+  const a = activeTab();
+  const t = (k, ic, en) => h('a', { href: `#${k}`, class: a === k ? 'on' : '' }, icon(ic), h('span', {}, en));
+  return h('nav', { class: 'tabs' }, t('home', 'home', 'Money'), t('jobs', 'briefcase', 'Jobs'),
+    h('button', { class: 'fab', onclick: quickAdd, 'aria-label': 'Add' }, icon('plus')),
+    t('invoices', 'file', 'Invoices'), t('receipts', 'camera', 'Receipts'));
+}
+function quickAdd() {
+  openSheet('Add · 追加', h('div', { class: 'quick' },
+    [['briefcase', 'Log work', '仕事を記録', () => jobForm()], ['camera', 'Add receipt', '領収書', () => receiptForm()], ['file', 'New invoice', '請求書', () => invoiceForm()]]
+      .map(([ic, en, ja, fn]) => h('button', { class: 'qa', onclick: () => { closeSheet(); fn(); } }, icon(ic), h('b', {}, en), h('small', {}, ja)))));
 }
 
 // =====================================================================
 // HOME: finance tracker
 // =====================================================================
 let homeYear = C.yearOf(C.today());
+const STATUS_LABEL = { draft: 'To send', sent: 'Sent', overdue: 'Overdue', partial: 'Part paid', paid: 'Paid' };
+const byIssueDesc = (a, b) => (b.issueDate || '').localeCompare(a.issueDate || '') || String(b.number).localeCompare(String(a.number));
+
+function invoiceRow(inv) {
+  const t = C.invoiceTotals(inv, data); const st = C.invoiceStatus(inv, data);
+  return h('a', { class: 'rowi', href: `#invoice/${inv.id}` },
+    h('div', { class: 'r-main' }, h('b', {}, clientName(inv.clientId)), h('small', {}, `#${inv.number}${inv.project ? ' · ' + inv.project : ''}`)),
+    h('div', { class: 'r-mid' }, chip(STATUS_LABEL[st], st)),
+    h('div', { class: 'r-end' }, h('b', {}, money(t.total)), h('small', {}, C.fmtDateEn(inv.issueDate))));
+}
+
 routes.home = () => {
   const s = C.yearSummary(data, homeYear);
   const years = [...new Set([C.yearOf(C.today()), ...data.jobs.filter((j) => !j.deleted).map((j) => C.yearOf(j.date))])].sort((a, b) => b - a);
-  const pct = Math.min(100, Math.round((s.net / C.FILING_LINE) * 100));
+  const pctRaw = Math.round((s.net / C.FILING_LINE) * 100);
   const maxM = Math.max(1, ...s.months);
   const laneTotal = Math.max(1, s.income);
+  const kpi = (cls, label, ja, value, ...extra) => h('div', { class: `card kpi ${cls}` },
+    h('div', { class: 'kpi-label' }, h('span', {}, label), h('small', {}, ja)), h('div', { class: 'kpi-value' }, value), extra);
+  const recent = S.live('invoices').sort(byIssueDesc).slice(0, 6);
 
   return h('div', { class: 'stack' },
-    h('div', { class: 'row between' }, h('h1', {}, `${homeYear} side income`),
-      sel(years.map((y) => [y, y]), homeYear, { class: 'year', onchange: (e) => { homeYear = Number(e.target.value); render(); } })),
-
-    setupCard(),
-
-    h('div', { class: 'card hero' },
-      h('div', { class: 'big' }, money(s.net)),
-      h('div', { class: 'muted' }, 'earned after expenses (counted by the day you worked)'),
-      h('div', { class: 'lanes' }, Object.entries(C.LANES).map(([k, l]) => h('div', { class: 'lane' },
-        h('div', { class: 'lane-bar' }, h('i', { class: `l-${k}`, style: `width:${Math.round(((s.lanes[k] || 0) / laneTotal) * 100)}%` })),
-        h('div', { class: 'row between small' }, h('span', {}, `${l.icon} ${l.en}`), h('b', {}, money(s.lanes[k] || 0)))))),
-      s.expenses ? h('div', { class: 'small muted' }, `Income ${money(s.income)} − your own expenses ${money(s.expenses)}`) : null,
-      s.uninvoiced ? h('a', { class: 'notice', href: '#jobs' }, `${money(s.uninvoiced)} of work not invoiced yet → invoice it`) : null),
-
+    pageHead('Dashboard', `${homeYear}年 · 収支`, sel(years.map((y) => [y, y]), homeYear, { class: 'year', onchange: (e) => { homeYear = Number(e.target.value) || homeYear; render(); } })),
+    setupCard('main'),
+    h('div', { class: 'kpis' },
+      kpi('hero', `Earned in ${homeYear}`, '収入', money(s.net),
+        h('div', { class: 'kpi-sub' }, s.expenses ? `${money(s.income)} income − ${money(s.expenses)} costs` : 'after expenses · by the day you worked'),
+        h('div', { class: 'lanes' }, Object.entries(C.LANES).map(([k, l]) => h('div', { class: 'lane' },
+          h('div', { class: 'row between small' }, h('span', {}, h('i', { class: `dot l-${k}` }), `${l.en}`), h('b', {}, money(s.lanes[k] || 0))),
+          h('div', { class: 'lane-bar' }, h('i', { class: `l-${k}`, style: `width:${Math.round(((s.lanes[k] || 0) / laneTotal) * 100)}%` })))))),
+      kpi('', 'Put aside for tax', '納税準備', money(s.setAside),
+        h('div', { class: 'kpi-sub' }, s.stillToSave ? `${money(s.stillToSave)} still to save` : 'All saved ✓'),
+        s.withheld ? h('span', { class: 'chip sent' }, `${money(s.withheld)} already withheld`) : null),
+      kpi('', 'Owed to you', '未入金', money(s.owed),
+        s.overdueCount ? h('a', { class: 'chip overdue', href: '#invoices' }, `${s.overdueCount} overdue · ${money(s.overdue)}`) : h('span', { class: 'chip paid' }, 'Nothing overdue')),
+      kpi(s.overFilingLine ? 'warn' : '', 'Tax return line', '確定申告', `${pctRaw}%`,
+        h('div', { class: 'meter' }, h('i', { class: s.overFilingLine ? 'over' : '', style: `width:${Math.min(100, pctRaw)}%` })),
+        h('div', { class: 'kpi-sub' }, s.overFilingLine ? `Over ¥200k · file by 15 Mar ${homeYear + 1}` : `${money(s.filingGap)} until you need to file`), help('確定申告'))),
+    s.uninvoiced ? h('a', { class: 'notice', href: '#jobs' }, `${money(s.uninvoiced)} of work isn't invoiced yet → invoice it`) : null,
+    h('div', { class: 'dash-grid' },
+      monthChart(s, maxM),
+      h('div', { class: 'stack' },
+        h('div', { class: 'card' },
+          h('h3', {}, 'Tax pot ', h('small', { class: 'ja' }, '納税用の貯金')),
+          h('div', { class: 'row gap' },
+            field('Saved so far ¥', inp({ type: 'number', inputmode: 'numeric', value: s.saved || '', placeholder: '0', onchange: (e) => { const sa = { ...(data.settings.savedAside || {}) }; sa[homeYear] = Number(e.target.value) || 0; S.setSettings({ savedAside: sa }); } })),
+            h('div', { class: 'tile' }, h('small', {}, 'Still to save'), h('b', {}, money(s.stillToSave)))),
+          h('details', {}, h('summary', {}, 'How is this worked out?'),
+            h('p', { class: 'small' }, `${Math.round(s.rate * 100)}% of ${money(s.net)} = ${money(s.taxEstimate)}${s.withheld ? `, minus ${money(s.withheld)} clients already withheld` : ''}. Side income sits on top of your Capsule salary (about ${money(data.settings.salaryMonthly || 0)}/month), so it's taxed at 5% × 1.021 income tax + 10% resident tax ≈ 15%. ⚠️ Estimate: assumes no bonus or dependents. Check against your 源泉徴収票.`))),
+        h('div', { class: 'card small' },
+          h('h3', {}, 'Key dates ', h('small', { class: 'ja' }, '予定')),
+          h('ul', { class: 'dates' },
+            h('li', {}, h('b', {}, 'Month end'), h('span', {}, 'invoice last month\'s work')),
+            h('li', {}, h('b', {}, `Dec–Jan`), h('span', {}, '源泉徴収票 from Capsule ', help('源泉徴収票'))),
+            h('li', {}, h('b', {}, `16 Feb–15 Mar ${homeYear + 1}`), h('span', {}, 'tax return ', help('確定申告'))),
+            h('li', {}, h('b', {}, `Jun ${homeYear + 1}`), h('span', {}, 'resident tax bills ', help('住民税'))))))),
     h('div', { class: 'card' },
-      h('div', { class: 'row between' }, h('h3', {}, 'Tax return line ', help('確定申告')), s.overFilingLine ? chip('Return needed', 'warn') : chip('Under the line', 'ok')),
-      h('div', { class: 'meter' }, h('i', { class: s.overFilingLine ? 'over' : '', style: `width:${pct}%` })),
-      h('p', { class: 'small' }, s.overFilingLine
-        ? `You're ${money(-s.filingGap)} over ¥200,000, so file a tax return for ${homeYear} by 15 March ${homeYear + 1}.`
-        : `${money(s.filingGap)} to go before you need to file a tax return. Resident tax still needs a simple declaration either way.`)),
-
-    h('div', { class: 'card' },
-      h('div', { class: 'row between' }, h('h3', {}, 'Put aside for tax'), h('span', { class: 'big2' }, money(s.setAside))),
-      h('p', { class: 'small muted' }, `${Math.round(s.rate * 100)}% of ${money(s.net)} = ${money(s.taxEstimate)}`, s.withheld ? `, minus ${money(s.withheld)} clients already withheld for you` : '', '.'),
-      h('div', { class: 'row gap' },
-        field('Saved so far', inp({ type: 'number', inputmode: 'numeric', value: s.saved || '', placeholder: '0', onchange: (e) => { const sa = { ...(data.settings.savedAside || {}) }; sa[homeYear] = Number(e.target.value) || 0; S.setSettings({ savedAside: sa }); } })),
-        h('div', { class: 'tile' }, h('span', { class: 'small muted' }, 'Still to save'), h('b', {}, money(s.stillToSave)))),
-      h('details', {}, h('summary', {}, 'How is this worked out?'),
-        h('p', { class: 'small' }, `Side income is added on top of your Capsule salary (about ${money(data.settings.salaryMonthly || 0)}/month), which puts it in the 5% income tax band. 5% × 1.021 + 10% resident tax ≈ 15%. Income tax is paid when you file (by 15 March). Resident tax bills start in June. ⚠️ Estimate: assumes no bonus or dependents. Check against your 源泉徴収票.`))),
-
-    h('div', { class: 'card' },
-      h('div', { class: 'row between' }, h('h3', {}, 'Owed to you'), h('span', { class: 'big2' }, money(s.owed))),
-      s.overdueCount ? h('a', { class: 'notice bad', href: '#invoices' }, `${s.overdueCount} overdue (${money(s.overdue)}) → send a reminder`) : h('p', { class: 'small muted' }, 'Nothing overdue.')),
-
-    monthChart(s, maxM),
-
-    h('div', { class: 'card small' },
-      h('h3', {}, 'Key dates'),
-      h('ul', { class: 'plain' },
-        h('li', {}, h('b', {}, 'End of each month: '), 'invoice last month\'s work'),
-        h('li', {}, h('b', {}, `Dec ${homeYear} / Jan ${homeYear + 1}: `), 'get your 源泉徴収票 from Capsule ', help('源泉徴収票')),
-        h('li', {}, h('b', {}, `16 Feb – 15 Mar ${homeYear + 1}: `), 'tax return window ', help('確定申告')),
-        h('li', {}, h('b', {}, `June ${homeYear + 1}: `), 'resident tax bills arrive ', help('住民税')))),
-  );
+      h('div', { class: 'row between' }, h('h3', {}, 'Recent invoices ', h('small', { class: 'ja' }, '最近の請求書')), h('a', { href: '#invoices', class: 'small' }, 'View all ›')),
+      recent.length ? h('div', { class: 'rows' }, recent.map(invoiceRow)) : h('p', { class: 'empty' }, 'No invoices yet.')));
 };
 
 
@@ -239,15 +347,16 @@ function setupState() {
     ['Set up in-app updates', G.hasToken(), '#updates'],
   ];
 }
-function setupCard() {
+function setupCard(where = 'main') {
   const st = setupState();
   const done = st.filter((x) => x[1]).length;
   if (done === st.length || localStorage.getItem('fl_setup_hide') === '1') return null;
-  return h('div', { class: 'card setup' },
-    h('div', { class: 'row between' }, h('h3', {}, `Finish setting up · ${done} of ${st.length}`),
+  return h('div', { class: `card setup setup-${where}` },
+    h('div', { class: 'row between' }, h('h3', {}, `Setup ${done}/${st.length} `, h('small', { class: 'ja' }, '初期設定')),
       h('button', { class: 'icon', onclick: () => { localStorage.setItem('fl_setup_hide', '1'); render(); }, 'aria-label': 'Hide' }, '✕')),
-    h('div', { class: 'list' }, st.map(([label, ok, href]) => h('a', { class: `item ${ok ? 'done' : ''}`, href },
-      h('span', { class: 'tick' }, ok ? '✓' : ''), h('span', { class: 'grow' }, label), ok ? null : '›'))));
+    h('div', { class: 'meter' }, h('i', { style: `width:${Math.round((done / st.length) * 100)}%` })),
+    h('div', { class: 'checklist' }, st.map(([label, ok, href]) => h('a', { class: `ck ${ok ? 'done' : ''}`, href },
+      h('span', { class: 'tick' }, ok ? '✓' : ''), h('span', { class: 'grow' }, label), ok ? null : icon('chevron', 'chev')))));
 }
 
 // ---------- guide building blocks ----------
@@ -272,7 +381,7 @@ routes.jobs = () => {
   const selJobs = [...selected].map((id) => S.byId('jobs', id)).filter(Boolean);
 
   return h('div', { class: 'stack' },
-    h('div', { class: 'row between' }, h('h1', {}, 'Jobs'), h('button', { class: 'btn', onclick: () => jobForm() }, '+ Log work')),
+    pageHead('Jobs', '仕事', h('button', { class: 'btn', onclick: () => jobForm() }, icon('plus'), 'Log work')),
     h('div', { class: 'seg' }, [['all', 'All'], ['open', 'Not invoiced']].map(([k, l]) => h('button', { class: jobFilter === k ? 'on' : '', onclick: () => { jobFilter = k; render(); } }, l))),
     selJobs.length ? h('div', { class: 'card selbar' },
       h('span', {}, `${selJobs.length} selected · ${money(selJobs.reduce((s, j) => s + C.jobFee(j), 0))}`),
@@ -282,18 +391,16 @@ routes.jobs = () => {
         invoiceForm(null, { clientId: selJobs[0].clientId, jobIds: selJobs.map((j) => j.id) });
       } }, 'Create invoice'),
       h('button', { class: 'btn ghost', onclick: () => { selected.clear(); render(); } }, 'Clear')) : null,
-    !jobs.length ? h('p', { class: 'empty' }, jobFilter === 'open' ? 'All work is invoiced. Nice.' : 'No jobs yet. Tap "Log work" after each shoot or teaching day.') : null,
-    Object.entries(groups).map(([ym, list]) => h('section', {},
-      h('h4', { class: 'month' }, `${C.fmtDateEn(ym + '-01').split(' ').slice(1).join(' ')} · ${money(list.reduce((s, j) => s + C.jobFee(j), 0))}`),
-      h('div', { class: 'list' }, list.map((j) => {
+    !jobs.length ? h('p', { class: 'empty' }, jobFilter === 'open' ? 'All work is invoiced. Nice.' : 'No jobs yet. Tap + after each shoot or teaching day.') : null,
+    Object.entries(groups).map(([ym, list]) => h('div', { class: 'card tight' },
+      h('div', { class: 'month' }, h('span', {}, C.MONTHS[Number(ym.slice(5)) - 1], ' ', ym.slice(0, 4)), h('b', {}, money(list.reduce((s, j) => s + C.jobFee(j), 0)))),
+      h('div', { class: 'rows' }, list.map((j) => {
         const st = status(j);
-        const canSel = !st;
-        return h('div', { class: 'item' },
-          canSel ? h('input', { type: 'checkbox', class: 'pick', checked: selected.has(j.id), onchange: (e) => { e.target.checked ? selected.add(j.id) : selected.delete(j.id); render(); } }) : h('span', { class: 'pick-sp' }),
-          h('div', { class: 'grow', onclick: () => jobForm(j) },
-            h('div', { class: 'row between' }, h('b', {}, `${C.LANES[j.lane]?.icon || ''} ${j.description || j.position || j.project || 'Work'}`), h('b', {}, money(C.jobFee(j)))),
-            h('div', { class: 'row between small muted' }, h('span', {}, `${C.fmtDateSlash(j.date)} · ${clientName(j.clientId)}${j.project ? ' · ' + j.project : ''}`),
-              st === 'direct' ? chip('Paid directly', 'ok') : st ? chip(`#${st.number}`, C.invoiceStatus(st, data)) : chip('Not invoiced', 'warn'))));
+        return h('div', { class: 'rowi', onclick: () => jobForm(j) },
+          !st ? h('input', { type: 'checkbox', class: 'pick', checked: selected.has(j.id), onclick: (e) => e.stopPropagation(), onchange: (e) => { e.target.checked ? selected.add(j.id) : selected.delete(j.id); render(); } }) : h('span', { class: `lane-tag l-${j.lane}` }),
+          h('div', { class: 'r-main' }, h('b', {}, j.description || j.position || j.project || 'Work'), h('small', {}, `${clientName(j.clientId)}${j.project ? ' · ' + j.project : ''}`)),
+          h('div', { class: 'r-mid' }, st === 'direct' ? chip('Paid directly', 'paid') : st ? chip(`#${st.number}`, C.invoiceStatus(st, data)) : chip('Not invoiced', 'draft')),
+          h('div', { class: 'r-end' }, h('b', {}, money(C.jobFee(j))), h('small', {}, C.fmtDateEn(j.date))));
       })))));
 };
 
@@ -348,25 +455,22 @@ function jobForm(job, preset = {}) {
 // =====================================================================
 // INVOICES
 // =====================================================================
-const STATUS_LABEL = { draft: 'Draft', sent: 'Sent', overdue: 'Overdue', partial: 'Part paid', paid: 'Paid' };
+let invFilter = 'all';
 routes.invoices = () => {
-  const list = S.live('invoices').sort((a, b) => (b.issueDate || '').localeCompare(a.issueDate || '') || String(b.number).localeCompare(String(a.number)));
+  const all = S.live('invoices').sort(byIssueDesc);
+  const F = { all: () => true, draft: (i) => C.invoiceStatus(i, data) === 'draft', unpaid: (i) => ['sent', 'overdue', 'partial'].includes(C.invoiceStatus(i, data)), paid: (i) => C.invoiceStatus(i, data) === 'paid' };
+  const list = all.filter(F[invFilter] || F.all);
+  const count = (k) => all.filter(F[k]).length;
   return h('div', { class: 'stack' },
-    h('div', { class: 'row between' }, h('h1', {}, 'Invoices'), h('button', { class: 'btn', onclick: () => invoiceForm() }, '+ New invoice')),
-    !list.length ? h('p', { class: 'empty' }, 'No invoices yet. Log some work first, then create an invoice from it.') : null,
-    h('div', { class: 'list' }, list.map((inv) => {
-      const t = C.invoiceTotals(inv, data); const st = C.invoiceStatus(inv, data);
-      return h('a', { class: 'item', href: `#invoice/${inv.id}` }, h('div', { class: 'grow' },
-        h('div', { class: 'row between' }, h('b', {}, `#${inv.number} · ${clientName(inv.clientId)}`), h('b', {}, money(t.total))),
-        h('div', { class: 'row between small muted' }, h('span', {}, `${C.fmtDateSlash(inv.issueDate)}${inv.project ? ' · ' + inv.project : ''}`),
-          h('span', {}, inv.legacy ? chip('History', '') : null, ' ', chip(STATUS_LABEL[st], st)))));
-    })));
+    pageHead('Invoices', '請求書', h('button', { class: 'btn', onclick: () => invoiceForm() }, icon('plus'), 'New invoice')),
+    h('div', { class: 'seg' }, [['all', 'All'], ['draft', 'To send'], ['unpaid', 'Unpaid'], ['paid', 'Paid']].map(([k, l]) => h('button', { class: invFilter === k ? 'on' : '', onclick: () => { invFilter = k; render(); } }, l, h('small', {}, ` ${count(k)}`)))),
+    !list.length ? h('p', { class: 'empty' }, all.length ? 'Nothing here.' : 'No invoices yet. Log some work first, then create an invoice from it.') : h('div', { class: 'card tight' }, h('div', { class: 'rows' }, list.map(invoiceRow))));
 };
 
 function invoiceForm(inv, preset = {}) {
   const isNew = !inv;
-  const base = inv ? { ...inv } : { id: S.uid('iv'), deleted: false, legacy: false, number: '', clientId: '', lang: 'ja', issueDate: C.today(), dueDate: C.endOfFollowingMonth(C.today()), project: '', position: '', jobIds: [], receiptIds: [], addTax: true, withhold: false, status: 'draft', payments: [], note: '', ...preset };
-  let st = { ...base, jobIds: [...base.jobIds], receiptIds: [...base.receiptIds] };
+  const base = inv ? { ...inv } : { id: S.uid('iv'), deleted: false, legacy: false, number: '', clientId: '', lang: 'ja', issueDate: C.today(), dueDate: C.endOfFollowingMonth(C.today()), project: '', position: '', jobIds: [], receiptIds: [], lines: [], addTax: true, withhold: false, status: 'draft', payments: [], note: '', ...preset };
+  let st = { ...base, jobIds: [...base.jobIds], receiptIds: [...base.receiptIds], lines: [...(base.lines || [])] };
   const body = h('div', { class: 'form' });
 
   const draw = () => {
@@ -388,6 +492,14 @@ function invoiceForm(inv, preset = {}) {
       !isNew && base.status !== 'draft' ? h('p', { class: 'notice warn' }, 'This invoice was already sent. Only change it if you\'re re-sending it.') : null,
       field('Client', fClient),
       st.clientId ? [
+        h('h4', {}, 'Invoice lines'),
+        st.lines.length ? h('div', { class: 'checks' }, st.lines.map((l, idx) => h('div', { class: 'check line-edit' },
+          h('input', { value: l.description || '', placeholder: 'Camera Assistant Shoot Day', oninput: (e) => { l.description = e.target.value; } }),
+          h('input', { type: 'number', value: l.qty || 1, min: '0', step: '0.5', class: 'mini', oninput: (e) => { l.qty = Number(e.target.value) || 0; draw(); } }),
+          h('input', { type: 'number', value: l.rate || 0, min: '0', step: '1', class: 'mini', oninput: (e) => { l.rate = Number(e.target.value) || 0; draw(); } }),
+          h('button', { class: 'icon', onclick: () => { st.lines = st.lines.filter((_, i) => i !== idx); draw(); } }, '×')))) : null,
+        h('button', { class: 'btn ghost small', onclick: () => { st.lines.push({ id: S.uid('ln'), description: '', date: st.issueDate, qty: 1, rate: 0 }); draw(); } }, '+ Add custom line'),
+        h('p', { class: 'small muted' }, 'Description, quantity and rate are editable for every invoice. Examples: Camera Assistant Shoot Day, travel day, prep day, transcoding.'),
         h('h4', {}, 'Work on this invoice'),
         openJobs.length ? h('div', { class: 'checks' }, openJobs.map((j) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: st.jobIds.includes(j.id), onchange: (e) => {
@@ -403,8 +515,9 @@ function invoiceForm(inv, preset = {}) {
         h('h4', {}, 'Expenses to be paid back ', help('立替金')),
         openRc.length ? h('div', { class: 'checks' }, openRc.map((r) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: st.receiptIds.includes(r.id), onchange: (e) => { st.receiptIds = e.target.checked ? [...st.receiptIds, r.id] : st.receiptIds.filter((x) => x !== r.id); draw(); } }),
-          h('span', { class: 'grow' }, `${C.fmtDateSlash(r.date)} · ${r.vendor || r.category}`, r.hasFile ? ' 📎' : ''), h('b', {}, money(r.amount))))) : h('p', { class: 'small muted' }, 'No reimbursable receipts for this client.'),
-        h('div', { class: 'grid2' }, field('Project (件名)', inp({ value: st.project, oninput: (e) => { st.project = e.target.value; } })), field('Position', inp({ value: st.position, oninput: (e) => { st.position = e.target.value; } }))),
+          h('span', { class: 'grow' }, `${C.fmtDateSlash(r.date)} · ${r.vendor || r.category}`, r.hasFile ? ' 📎' : ''), h('b', {}, money(r.amount))))) : h('p', { class: 'small muted' }, 'No reimbursable receipts yet.'),
+        h('button', { class: 'btn ghost small', onclick: () => receiptForm(null, { clientId: st.clientId, type: 'reimb' }, (r) => { st.receiptIds = [...new Set([...st.receiptIds, r.id])]; draw(); }) }, '+ Add receipt / photo'),
+        h('div', { class: 'grid2' }, field('Project (件名)', inp({ value: st.project, oninput: (e) => { st.project = e.target.value; } })), field('Client reference / 案件NO', inp({ value: st.clientReference || '', placeholder: 'e.g. PD0442026', oninput: (e) => { st.clientReference = e.target.value; } })), field('Position', inp({ value: st.position, oninput: (e) => { st.position = e.target.value; } }))),
         h('div', { class: 'grid2' }, field('Language', sel([['ja', '日本語'], ['en', 'English']], st.lang, { onchange: (e) => { st.lang = e.target.value; } })), field('Invoice no.', inp({ value: st.number || '(auto)', disabled: true }))),
         h('div', { class: 'grid2' }, field('Issue date', fIssue), field('Due date', fDue, 'End of next month')),
         tax.el, h('div', { class: 'help-row' }, help('消費税')), wh.el, h('div', { class: 'help-row' }, help('源泉')),
@@ -418,7 +531,7 @@ function invoiceForm(inv, preset = {}) {
   openSheet(isNew ? 'New invoice' : `Edit #${base.number}`, body, [
     h('button', { class: 'btn', onclick: () => {
       if (!st.clientId) return toast('Pick a client', 'bad');
-      if (!st.jobIds.length && !st.receiptIds.length) return toast('Add some work or expenses', 'bad');
+      if (!st.jobIds.length && !st.receiptIds.length && !st.lines.length) return toast('Add a line, work, or expense', 'bad');
       if (!st.number) st.number = C.nextInvoiceNumber(data, st.issueDate);
       S.upsert('invoices', st); closeSheet(); selected.clear(); go(`invoice/${st.id}`); render();
       toast(isNew ? `Invoice #${st.number} created` : 'Saved');
@@ -525,18 +638,18 @@ const thumbs = new Map();
 routes.receipts = () => {
   const list = S.live('receipts').sort((a, b) => b.date.localeCompare(a.date));
   return h('div', { class: 'stack' },
-    h('div', { class: 'row between' }, h('h1', {}, 'Receipts'), h('button', { class: 'btn', onclick: () => receiptForm() }, '+ Add receipt')),
+    pageHead('Receipts', '領収書', h('button', { class: 'btn', onclick: () => receiptForm() }, icon('plus'), 'Add receipt')),
     h('p', { class: 'small muted' }, h('b', {}, 'Paid back'), ' = the client pays you back (goes on the invoice as 立替金). ', h('b', {}, 'My cost'), ' = you paid it yourself (lowers your tax).'),
-    !list.length ? h('p', { class: 'empty' }, 'No receipts yet. Snap one after every taxi.') : null,
-    h('div', { class: 'list' }, list.map((r) => {
+    !list.length ? h('p', { class: 'empty' }, 'No receipts yet. Snap one after every taxi.') : h('div', { class: 'card tight' }, h('div', { class: 'rows' }, list.map((r) => {
       const inv = C.invoiceForReceipt(r.id, data);
       const th = h('div', { class: 'thumb' }, r.hasFile ? (r.mime === 'application/pdf' ? 'PDF' : '') : '—');
       if (r.hasFile && r.mime !== 'application/pdf') loadThumb(r, th);
-      return h('div', { class: 'item', onclick: () => receiptForm(r) }, th, h('div', { class: 'grow' },
-        h('div', { class: 'row between' }, h('b', {}, r.vendor || r.category), h('b', {}, money(r.amount))),
-        h('div', { class: 'row between small muted' }, h('span', {}, `${C.fmtDateSlash(r.date)}${r.jobId ? ' · ' + (S.byId('jobs', r.jobId)?.project || clientName(S.byId('jobs', r.jobId)?.clientId)) : ''}`),
-          r.type === 'own' ? chip('My cost', '') : inv ? chip(`#${inv.number}`, C.invoiceStatus(inv, data)) : chip('Not invoiced', 'warn'))));
-    })));
+      const job = r.jobId ? S.byId('jobs', r.jobId) : null;
+      return h('div', { class: 'rowi', onclick: () => receiptForm(r) }, th,
+        h('div', { class: 'r-main' }, h('b', {}, r.vendor || r.category), h('small', {}, job ? (job.project || clientName(job.clientId)) : r.category)),
+        h('div', { class: 'r-mid' }, r.type === 'own' ? chip('My cost', '') : inv ? chip(`#${inv.number}`, C.invoiceStatus(inv, data)) : chip('Not invoiced', 'draft')),
+        h('div', { class: 'r-end' }, h('b', {}, money(r.amount)), h('small', {}, C.fmtDateEn(r.date))));
+    }))));
 };
 async function loadThumb(r, el) {
   try {
@@ -558,15 +671,14 @@ async function compressImage(file) {
   } catch { return file; }
 }
 
-function receiptForm(rc, preset = {}) {
+function receiptForm(rc, preset = {}, onSaved = null) {
   const isNew = !rc;
   const r = rc ? { ...rc } : { id: S.uid('rc'), deleted: false, date: C.today(), amount: '', vendor: '', category: 'Taxi', type: 'reimb', jobId: '', clientId: '', notes: '', hasFile: false, ...preset };
   let newFile = null;
-  const fFile = h('input', { type: 'file', accept: 'image/*,application/pdf' });
   const prev = h('div', { class: 'rprev' }, r.hasFile ? 'File attached' : 'No photo yet');
   if (r.hasFile) S.getFile(r.id).then((b) => { if (b && b.type.startsWith('image/')) fill(prev, h('img', { src: URL.createObjectURL(b) })); else if (b) fill(prev, h('a', { href: URL.createObjectURL(b), target: '_blank' }, 'Open PDF')); else if (r.driveId) prev.textContent = 'Saved on Google Drive'; });
-  fFile.onchange = async () => {
-    const f = fFile.files[0]; if (!f) return;
+  const onFile = async (files) => {
+    const f = files[0]; if (!f) return;
     newFile = await compressImage(f);
     newFile.__name = f.name;
     fill(prev, newFile.type.startsWith('image/') ? h('img', { src: URL.createObjectURL(newFile) }) : h('span', {}, f.name));
@@ -584,7 +696,7 @@ function receiptForm(rc, preset = {}) {
 
   openSheet(isNew ? 'Add receipt' : 'Edit receipt', h('div', { class: 'form' },
     inv ? h('p', { class: 'notice' }, `On invoice #${inv.number}.`) : null,
-    h('label', { class: 'filebtn' }, '📸 Take photo / choose file', fFile), prev,
+    filePicker('📸 Take photo / choose file', { accept: 'image/*,application/pdf', onFiles: onFile, fallback: false }), prev,
     h('div', { class: 'grid2' }, field('Date', fDate), field('Amount ¥', fAmt)),
     h('div', { class: 'grid2' }, field('Shop / what', fVendor), field('Category', fCat)),
     field('Who pays?', fType), field('Job', fJob, 'Linking a job adds it to that job\'s invoice automatically'),
@@ -605,7 +717,7 @@ function receiptForm(rc, preset = {}) {
         const ji = C.invoiceForJob(out.jobId, data);
         if (ji && ji.status === 'draft' && !ji.receiptIds.includes(out.id)) { ji.receiptIds.push(out.id); S.upsert('invoices', ji); }
       }
-      S.upsert('receipts', out); closeSheet(); render(); toast('Receipt saved');
+      S.upsert('receipts', out); if (onSaved) onSaved(out); closeSheet(); render(); toast('Receipt saved');
     } }, 'Save'),
   ]);
 }
@@ -614,21 +726,22 @@ function receiptForm(rc, preset = {}) {
 // MORE: clients, profile, settings, drive, data, help
 // =====================================================================
 routes.more = () => h('div', { class: 'stack' },
-  h('h1', {}, 'More'),
-  h('div', { class: 'list' },
-    [['clients', '👥', 'Clients', 'Who withholds, who gets 10% tax, rates'],
-      ['profile', '🪪', 'My details', 'Name, address, bank (on every invoice)'],
-      ['settings', '🧮', 'Tax settings', 'Set-aside rate, salary'],
-      ['drive', '☁️', 'Google Drive', D.isConnected() ? 'Connected' : (data.drive.lastSync ? 'Set up · tap Sync to sign in' : 'Not set up · guide inside')],
-      ['email', '✉️', 'Email setup', localStorage.getItem('fl_mail_done') === '1' ? 'Set up' : 'How sending invoices works'],
-      ['updates', '⬆️', 'App updates', G.hasToken() ? `v${VERSION} · install updates here` : `v${VERSION} · set up in-app updates`],
-      ['data', '💾', 'Backup & restore', 'Download a backup, load your starter file'],
-      ['help', '📖', 'Plain-English glossary', 'What all the Japanese tax words mean'],
-    ].map(([k, i, t, s]) => h('a', { class: 'item', href: `#${k}` }, h('span', { class: 'ti' }, i), h('div', { class: 'grow' }, h('b', {}, t), h('div', { class: 'small muted' }, s)), '›'))),
+  pageHead('Settings', '設定'),
+  h('div', { class: 'card tight' }, h('div', { class: 'rows' },
+    [['clients', 'users', 'Clients', 'Who withholds, who gets 10% tax, rates'],
+      ['profile', 'id', 'My details', 'Name, address, bank (on every invoice)'],
+      ['settings', 'percent', 'Tax settings', 'Set-aside rate, salary'],
+      ['drive', 'cloud', 'Google Drive', D.isConnected() ? 'Connected' : (data.drive.lastSync ? 'Set up · tap Sync to sign in' : 'Not set up · guide inside')],
+      ['email', 'mail', 'Email setup', localStorage.getItem('fl_mail_done') === '1' ? 'Set up' : 'How sending invoices works'],
+      ['updates', 'upload', 'App updates', G.hasToken() ? `v${VERSION} · install updates here` : `v${VERSION} · set up in-app updates`],
+      ['data', 'archive', 'Backup & restore', 'Download a backup, load your starter file'],
+      ['help', 'book', 'Plain-English glossary', 'What all the Japanese tax words mean'],
+    ].map(([k, ic, t, s]) => h('a', { class: 'rowi', href: `#${k}` }, h('span', { class: 'ibox' }, icon(ic)), h('div', { class: 'r-main' }, h('b', {}, t), h('small', {}, s)), icon('chevron', 'chev'))))),
   h('p', { class: 'small muted center' }, `Freelance Ledger v${VERSION}`));
 
+
 routes.clients = () => h('div', { class: 'stack' },
-  h('a', { href: '#more', class: 'back' }, '‹ More'),
+  backLink(),
   h('div', { class: 'row between' }, h('h1', {}, 'Clients'), h('button', { class: 'btn', onclick: () => clientForm() }, '+ Add')),
   h('div', { class: 'list' }, S.live('clients').sort((a, b) => (a.nameEn || '').localeCompare(b.nameEn || '')).map((c) => h('div', { class: 'item', onclick: () => clientForm(c) }, h('div', { class: 'grow' },
     h('b', {}, c.nameEn || c.nameJa),
@@ -672,7 +785,7 @@ routes.profile = () => {
     phone: inp({ value: p.phone, type: 'tel' }), email: inp({ value: p.email, type: 'email' }),
     bname: inp({ value: b.name }), bnameEn: inp({ value: b.nameEn }), branch: inp({ value: b.branch }), type: inp({ value: b.type }), number: inp({ value: b.number }), holder: inp({ value: b.holder }),
   };
-  return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'My details'),
+  return h('div', { class: 'stack' }, backLink(), h('h1', {}, 'My details'),
     h('p', { class: 'small muted' }, 'Printed on every invoice. Client details never go here.'),
     h('div', { class: 'card form' }, field('Name on invoices', f.nameEn), h('div', { class: 'grid2' }, field('Email sign-off (JP)', f.signatureJa), field('Email sign-off (EN)', f.signatureEn)),
       field('Address (Japanese)', f.addressJa), field('Address (English)', f.addressEn), h('div', { class: 'grid2' }, field('Phone', f.phone), field('Email', f.email))),
@@ -689,7 +802,7 @@ routes.settings = () => {
   const s = data.settings;
   const rate = inp({ type: 'number', step: '1', value: Math.round((s.setAsideRate ?? 0.15) * 100) });
   const sal = inp({ type: 'number', value: s.salaryMonthly || '' });
-  return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Tax settings'),
+  return h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Tax settings'),
     h('div', { class: 'card form' },
       field('Set-aside rate %', rate, '15% fits a ~¥300k/month salary (5% income tax band + 10% resident tax). Use 20% if your salary goes above ~¥5M/year.'),
       field('Capsule salary per month ¥', sal, 'Only used for the explanation. Update from your 源泉徴収票.'),
@@ -713,14 +826,14 @@ routes.drive = () => {
     step(6, 'Create the Client ID', p_('Application type: ', h('b', {}, 'Web application'), '. Name: Ledger web. Under ', h('b', {}, 'Authorised JavaScript origins'), ' click Add URI and paste exactly this (no slash at the end):'), codeLine(location.origin), p_('Leave "redirect URIs" empty. Click ', h('b', {}, 'Create'), '.'), linkBtn(`${C_}/auth/clients/create`, 'Create client')),
     step(7, 'Paste the Client ID below', p_('Google shows it in a popup. It ends in ', h('code', {}, '.apps.googleusercontent.com'), '. Paste it in the box below and tap Save. Lost the popup? Open Clients and click the name to see it again.'), linkBtn(`${C_}/auth/clients`, 'Clients')),
     step(8, 'Connect', p_('Tap ', h('b', {}, 'Connect & sync'), '. Google warns "Google hasn\'t verified this app". That\'s normal for your own app: tap ', h('b', {}, 'Continue'), ', tick the Drive boxes, Continue.')),
-    step(9, 'Then on your phone', p_('Open the app on your phone → More → Google Drive. Paste the ', h('b', {}, 'same'), ' Client ID (use the copy button below, send it to yourself), then Connect & sync. Everything comes across.')),
+    step(9, 'Share it with your other devices', p_('Tap ', h('b', {}, 'Use on all my devices'), ' (needs App updates set up). After that, any new phone or computer just opens the link and taps ', h('b', {}, 'Connect Google Drive'), '. No pasting. (The Client ID isn\'t secret, it only identifies your app to Google.)')),
     h('h4', {}, 'If something goes wrong'),
     trouble('"Error 400: origin_mismatch" or "redirect_uri_mismatch"', `Step 6 doesn't match. The origin must be exactly ${location.origin}. Fix it in Clients, wait 5 minutes, try again.`),
     trouble('"Access blocked" or "403: access_denied"', 'You\'re not on the tester list. Do step 5 with the exact Google account you\'re signing in with.'),
     trouble('Nothing happens when I tap Connect', 'Your browser blocked the popup. Allow popups for this site. On iPhone, open the app from Safari or the home-screen icon, not from inside another app.'),
     trouble('It asks me to sign in again', 'Normal. Google sign-ins last about an hour. Tap Sync and it reconnects.'));
 
-  return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Google Drive'),
+  return h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Google Drive'),
     h('p', { class: 'small' }, 'Your data saves on this device and syncs to your Google Drive, so your phone and computer stay in step. Invoices and receipts also go into a ', h('b', {}, 'Freelance Ledger'), ' folder in your Drive.'),
     h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('b', {}, D.isConnected() ? '✅ Connected' : data.drive.lastSync ? '🟡 Set up, sign in to sync' : '⚪ Not set up yet'), h('span', { class: 'small muted' }, `Last sync: ${last}`)),
@@ -729,7 +842,17 @@ routes.drive = () => {
         field('Google Client ID', cid),
         h('div', { class: 'row gap wrap' },
           h('button', { class: 'btn ghost', onclick: () => { if (!/\.apps\.googleusercontent\.com$/.test(cid.value.trim())) return toast('That doesn\'t look like a Client ID (should end in .apps.googleusercontent.com)', 'bad'); D.setClientId(cid.value); D.preload(); toast('Client ID saved'); render(); } }, 'Save'),
-          set ? copyBtn(D.getClientId(), 'Copy ID for phone') : null,
+          set && !D.isShared() ? h('button', { class: 'btn ghost', onclick: async (e) => {
+            if (!G.hasToken()) { toast('Set up App updates first (it uses the same GitHub key), or use Copy ID', 'bad'); return; }
+            e.target.disabled = true;
+            try {
+              const body = new TextEncoder().encode(JSON.stringify({ googleClientId: D.getClientId() }, null, 1) + '\n');
+              await G.publish([{ path: 'config.json', data: body }], 'Share Google Client ID with all devices', () => {});
+              D.setSharedClientId(D.getClientId()); toast('Done. New devices will just need to tap Connect (live in about a minute)'); render();
+            } catch (err) { e.target.disabled = false; toast(err.message, 'bad'); }
+          } }, 'Use on all my devices') : null,
+          set && !D.isShared() ? copyBtn(D.getClientId(), 'Copy ID') : null,
+          set && D.isShared() ? chip('Shared with all devices ✓', 'paid') : null,
           h('button', { class: 'btn', disabled: !set || null, onclick: syncTap }, D.isConnected() ? 'Sync now' : 'Connect & sync'),
           D.isConnected() ? h('button', { class: 'btn ghost', onclick: () => { D.disconnect(); render(); } }, 'Disconnect') : null,
           data.drive.lastSync ? h('a', { class: 'btn ghost', href: 'https://drive.google.com/drive/search?q=Freelance%20Ledger', target: '_blank', rel: 'noopener' }, 'Open Drive ↗') : null))),
@@ -754,7 +877,7 @@ routes.email = () => {
       markDone();
     } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'bad'); }
   };
-  return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Email setup'),
+  return h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Email setup'),
     h('div', { class: 'card' },
       h('p', {}, h('b', {}, 'There\'s nothing to link.'), ' The app makes the invoice PDF + receipts and hands them to your ', h('b', {}, 'Outlook app'), ', which is signed in to ', data.profile.email || 'your Hotmail', '. You check it and press send in Outlook.'),
       done ? h('p', { class: 'notice' }, '✓ Email is set up on this device.') : null),
@@ -783,15 +906,14 @@ routes.updates = () => {
   const saveTest = async () => {
     G.setConfig({ owner: fOwner.value, repo: fRepo.value, token: fToken.value });
     fill(status, h('p', { class: 'small muted' }, 'Checking…'));
-    try { const name = await G.test(); fill(status, h('p', { class: 'notice' }, `✓ Connected to ${name}. You can install updates now.`)); }
+    try { const name = await G.test(); toast(`Connected to ${name}`); render(); }
     catch (e) { fill(status, h('p', { class: 'notice bad' }, e.message)); }
   };
-  const fZip = h('input', { type: 'file', accept: '.zip,application/zip,.html,.js,.css,.json,.png,.webmanifest,.md', multiple: true });
-  fZip.onchange = async () => {
-    if (!fZip.files.length) return;
-    fill(prog, h('p', { class: 'small muted' }, 'Reading the update…'));
+  const onFiles = async (files) => {
+    busy = true;
+    fill(prog, h('p', { class: 'small muted' }, `Reading ${files.length === 1 ? files[0].name : files.length + ' files'}…`));
     try {
-      const pack = await G.prepare([...fZip.files], data.profile);
+      const pack = await G.prepare(files, data.profile);
       fill(prog, h('div', { class: 'card flat' },
         h('b', {}, pack.version ? `Update to v${pack.version}` : 'Update (no version number inside)'),
         h('p', { class: 'small muted' }, `${pack.files.length} files: ${pack.files.map((f) => f.path).join(', ')}`),
@@ -808,10 +930,10 @@ routes.updates = () => {
             const live = await G.waitForLive(pack.version, say);
             say(live ? 'Published! Reloading…' : 'Published. GitHub is slow today: reload in a few minutes.');
             if (live) setTimeout(G.reloadFresh, 800);
-          } catch (err) { fill(prog, h('p', { class: 'notice bad' }, err.message)); }
-        } }, 'Install update')));
-    } catch (e) { fill(prog, h('p', { class: 'notice bad' }, e.message)); }
-    fZip.value = '';
+          } catch (err) { busy = false; fill(prog, h('p', { class: 'notice bad' }, err.message)); }
+        } }, 'Install update'),
+        h('button', { class: 'btn ghost', onclick: () => { busy = false; fill(prog); } }, 'Cancel')));
+    } catch (e) { busy = false; fill(prog, h('p', { class: 'notice bad' }, e.message)); }
   };
   const has = G.hasToken();
   const guide = h('div', { class: 'card guide' },
@@ -823,13 +945,13 @@ routes.updates = () => {
     step(4, 'Create and copy it', p_('Click ', h('b', {}, 'Generate token'), ', then copy it (starts with ', h('code', {}, 'github_pat_'), '). GitHub only shows it once.')),
     step(5, 'Paste it below', p_('Paste it in the GitHub key box, then tap ', h('b', {}, 'Save & test'), '.')));
 
-  return h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'App updates'),
+  return h('div', { class: 'stack' }, backLink(), h('h1', {}, 'App updates'),
     h('div', { class: 'card' },
       h('div', { class: 'row between' }, h('b', {}, `Installed: v${VERSION}`), has ? chip('Updates ready', 'ok') : chip('Not set up', 'warn')),
       h('p', { class: 'small' }, 'When I send you a new version (a .zip file), download it, then choose it here. The app publishes it to your site and reloads. Your other devices update on their own the next time they open. Your data isn\'t touched.')),
     has ? null : guide,
     h('div', { class: 'card' }, h('h3', {}, 'Install an update'),
-      has ? [h('label', { class: 'filebtn' }, '📦 Choose update .zip', fZip),
+      has ? [filePicker('📦 Choose update .zip', { multiple: true, onFiles }),
         h('p', { class: 'small muted' }, 'Safari unzipped it into a folder? Open the folder and select all the files inside instead.'), prog]
         : h('p', { class: 'small muted' }, 'Do the setup above first.')),
     h('details', { open: !has || null }, h('summary', {}, 'GitHub connection'),
@@ -842,16 +964,18 @@ routes.updates = () => {
     has ? h('details', {}, h('summary', {}, 'Show the setup guide again'), guide) : null);
 };
 
-routes.data = () => h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Backup & restore'),
+routes.data = () => h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Backup & restore'),
   h('div', { class: 'card' }, h('h3', {}, 'Backup file'),
     h('p', { class: 'small' }, 'A full copy of your data (not receipt photos). Drive sync already does this. This is an extra safety net. Restoring merges the file into what\'s here, so it\'s also how you load your starter file.'),
     h('div', { class: 'row gap wrap' },
       h('button', { class: 'btn ghost', onclick: () => downloadFile(new File([JSON.stringify(S.exportable(), null, 1)], `freelance-ledger-backup-${C.today()}.json`, { type: 'application/json' })) }, 'Download backup'),
-      h('label', { class: 'btn ghost filebtn-inline' }, 'Restore from backup', h('input', { type: 'file', accept: 'application/json,.json', onchange: async (e) => {
-        try { S.importBackup(JSON.parse(await e.target.files[0].text())); toast('Backup restored'); } catch (err) { toast(err.message, 'bad'); }
-      } })))));
+    ),
+    h('h4', {}, 'Restore / load starter file'),
+    filePicker('📂 Choose backup or starter file (.json)', { onFiles: async (f) => {
+      try { S.importBackup(JSON.parse(await f[0].text())); toast('Loaded ✓'); } catch (err) { toast(err.message.includes('JSON') ? 'That file isn\'t a backup' : err.message, 'bad'); }
+    } })));
 
-routes.help = () => h('div', { class: 'stack' }, h('a', { href: '#more', class: 'back' }, '‹ More'), h('h1', {}, 'Plain-English glossary'),
+routes.help = () => h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Plain-English glossary'),
   GLOSSARY.map(([w, r, d]) => h('div', { class: 'card' }, h('div', { class: 'row between' }, h('b', { class: 'ja' }, w), h('span', { class: 'small muted' }, r)), h('p', {}, d))),
   h('p', { class: 'small muted' }, '⚠️ Guidance, not tax advice.'));
 
@@ -859,14 +983,41 @@ routes.help = () => h('div', { class: 'stack' }, h('a', { href: '#more', class: 
 if (D.getClientId()) D.preload();
 if (localStorage.getItem('fl_updating_to') === VERSION) { localStorage.removeItem('fl_updating_to'); setTimeout(() => toast(`Updated to v${VERSION} ✓`), 600); }
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
-if (!data.clients.length && !data.jobs.length && !localStorage.getItem('fl_welcomed')) {
-  setTimeout(() => openSheet('Welcome 👋', h('div', {},
-    h('p', {}, 'Load your starter file to get your details, clients and 2026 invoices in one go.'),
-    h('p', { class: 'small muted' }, 'On a second device, just connect Google Drive instead (More → Google Drive).'),
-    h('label', { class: 'filebtn' }, '📂 Choose starter file (.json)', h('input', { type: 'file', accept: 'application/json,.json', onchange: async (e) => {
-      try { S.importBackup(JSON.parse(await e.target.files[0].text())); localStorage.setItem('fl_welcomed', '1'); closeSheet(); render(); toast('All loaded'); } catch (err) { toast(err.message, 'bad'); }
-    } }))), [
-    h('button', { class: 'btn ghost', onclick: () => { localStorage.setItem('fl_welcomed', '1'); closeSheet(); } }, 'Skip'),
-  ]), 300);
+function welcome() {
+  if (data.clients.length || data.jobs.length || localStorage.getItem('fl_welcomed')) return;
+  const done = () => { localStorage.setItem('fl_welcomed', '1'); closeSheet(); render(); };
+  const hasId = !!D.getClientId();
+  openSheet('Welcome 👋', h('div', { class: 'stack' },
+    hasId ? h('div', {},
+      h('p', {}, h('b', {}, 'Using this on another device already?'), ' Connect Google Drive and all your data comes across.'),
+      h('button', { class: 'btn', onclick: async () => { try { await D.connect(); await D.sync(); done(); toast('All your data is here ✓'); } catch (e) { toast(e.message, 'bad'); } } }, icon('cloud'), 'Connect Google Drive')) : null,
+    h('div', {},
+      h('p', {}, hasId ? h('b', {}, 'First device?') : null, hasId ? ' ' : '', 'Load your starter file to get your details, clients and 2026 invoices in one go.'),
+      filePicker('📂 Choose starter file (.json)', { fallback: false, onFiles: async (f) => {
+        try { S.importBackup(JSON.parse(await f[0].text())); done(); toast('All loaded'); } catch (err) { toast(err.message.includes('JSON') ? 'That file isn\'t a starter file' : err.message, 'bad'); }
+      } })),
+    !hasId ? h('p', { class: 'small muted' }, 'Second device? Skip this and go to Settings → Google Drive.') : null), [
+    h('button', { class: 'btn ghost', onclick: done }, 'Skip'),
+  ]);
 }
+
+// Sync again when you come back to the app (e.g. after using it on your phone).
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  if (D.isConnected()) D.sync().then(() => { if (!sheetEl && !busy) render(); }).catch(() => {});
+  else if (!sheetEl && !busy) render();
+});
+// Google sign-ins last ~1 hour: show the sync bar again when it runs out.
+let wasOn = false;
+setInterval(() => { const on = D.isConnected(); if (wasOn && !on) document.querySelectorAll('.syncbar-slot').forEach((p) => p.replaceWith(syncBar())); wasOn = on; }, 30000);
+
+// Shared settings published to the site (just the Google Client ID, which isn't secret).
+fetch(`config.json?t=${Date.now()}`, { cache: 'no-store' })
+  .then((r) => (r.ok ? r.json() : null))
+  .catch(() => null)
+  .then((cfg) => {
+    if (cfg?.googleClientId) { D.setSharedClientId(cfg.googleClientId); D.preload(); }
+    if (!sheetEl) render();
+    setTimeout(welcome, 200);
+  });
 render();

@@ -16,7 +16,10 @@ const subs = new Set();
 export const onDrive = (fn) => { subs.add(fn); return () => subs.delete(fn); };
 const set = (status, message = '') => { state.status = status; state.message = message; subs.forEach((f) => f()); };
 
-export const getClientId = () => localStorage.getItem(CID_KEY) || '';
+let sharedId = ''; // from config.json on the site, so new devices don't need to paste it
+export const setSharedClientId = (v) => { sharedId = (v || '').trim(); };
+export const getClientId = () => localStorage.getItem(CID_KEY) || sharedId || '';
+export const isShared = (v = getClientId()) => !!v && v === sharedId;
 export const setClientId = (v) => { localStorage.setItem(CID_KEY, v.trim()); client = null; };
 export const isConnected = () => !!token && Date.now() < tokenExp;
 export const wasConnected = () => localStorage.getItem('fl_drive_on') === '1';

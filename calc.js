@@ -58,14 +58,16 @@ const alive = (x) => x && !x.deleted;
 export function invoiceTotals(inv, data) {
   const jobs = (inv.jobIds || []).map((id) => data.jobs.find((j) => j.id === id)).filter(alive);
   const receipts = (inv.receiptIds || []).map((id) => data.receipts.find((r) => r.id === id)).filter(alive);
-  const fees = jobs.reduce((s, j) => s + jobFee(j), 0);
+  const lines = (inv.lines || []).filter((l) => l && !l.deleted);
+  const lineTotal = lines.reduce((s, l) => s + Math.round((Number(l.qty) || 0) * (Number(l.rate) || 0)), 0);
+  const fees = jobs.reduce((s, j) => s + jobFee(j), 0) + lineTotal;
   const tax = inv.addTax ? Math.floor(fees * TAX_RATE) : 0;
   const wh = inv.withhold ? withholding(fees) : 0;
   const reimb = receipts.reduce((s, r) => s + Math.round(Number(r.amount) || 0), 0);
   const feeTotal = fees + tax - wh;
   const total = feeTotal + reimb;
   const paid = (inv.payments || []).reduce((s, p) => s + Math.round(Number(p.amount) || 0), 0);
-  return { jobs, receipts, fees, tax, wh, reimb, feeTotal, total, paid, owed: Math.max(0, total - paid) };
+  return { jobs, receipts, lines, fees, tax, wh, reimb, feeTotal, total, paid, owed: Math.max(0, total - paid) };
 }
 
 /** draft | sent | overdue | partial | paid */
