@@ -11,6 +11,9 @@ const ROOT_NAME = 'Freelance Ledger';
 const CID_KEY = 'fl_google_client_id';
 
 let token = null, tokenExp = 0, client = null, gisLoaded = null;
+const TOK_KEY = 'fl_drive_tok';
+try { const t = JSON.parse(localStorage.getItem(TOK_KEY) || 'null'); if (t && t.e > Date.now()) { token = t.t; tokenExp = t.e; } } catch {}
+const keepToken = () => { try { localStorage.setItem(TOK_KEY, JSON.stringify({ t: token, e: tokenExp })); } catch {} };
 export const state = { status: 'off', message: '' }; // off | ready | syncing | ok | error
 const subs = new Set();
 export const onDrive = (fn) => { subs.add(fn); return () => subs.delete(fn); };
@@ -47,7 +50,7 @@ export async function connect(prompt = '') {
       client_id: cid, scope: SCOPES,
       callback: (r) => {
         if (r.error) { set('error', r.error_description || r.error); return rej(new Error(r.error_description || r.error)); }
-        token = r.access_token; tokenExp = Date.now() + (Number(r.expires_in || 3600) - 60) * 1000;
+        token = r.access_token; tokenExp = Date.now() + (Number(r.expires_in || 3600) - 60) * 1000; keepToken();
         localStorage.setItem('fl_drive_on', '1');
         set('ready'); res();
       },
@@ -58,13 +61,13 @@ export async function connect(prompt = '') {
 }
 export function disconnect() {
   if (token && window.google?.accounts?.oauth2) window.google.accounts.oauth2.revoke(token, () => {});
-  token = null; tokenExp = 0; localStorage.removeItem('fl_drive_on'); set('off');
+  token = null; tokenExp = 0; localStorage.removeItem('fl_drive_on'); localStorage.removeItem(TOK_KEY); set('off');
 }
 
 async function api(url, opts = {}) {
   if (!isConnected()) throw new Error('Google Drive not connected');
   const r = await fetch(url, { ...opts, headers: { Authorization: `Bearer ${token}`, ...(opts.headers || {}) } });
-  if (r.status === 401) { token = null; set('off', 'Google sign-in expired. Tap Sync to reconnect'); throw new Error('Sign-in expired'); }
+  if (r.status === 401) { token = null; localStorage.removeItem(TOK_KEY); set('off', 'Google sign-in expired. Tap Sync to reconnect'); throw new Error('Sign-in expired'); }
   if (!r.ok) throw new Error(`Drive error ${r.status}: ${(await r.text()).slice(0, 160)}`);
   return r;
 }

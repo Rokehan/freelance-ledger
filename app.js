@@ -5,7 +5,7 @@ import { invoicePdf, invoicePreviewUrl } from './render.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -32,14 +32,14 @@ function fill(el, ...kids) {
  * File picker that works everywhere: big tap/click zone + drag & drop + a plain fallback input.
  * (Hidden inputs inside labels are unreliable in some browsers, so we click it ourselves.)
  */
-function filePicker(label, { accept = '', multiple = false, onFiles, fallback = true } = {}) {
+function filePicker(label, { accept = '', multiple = false, onFiles, fallback = true, capture = null, hint = true } = {}) {
   const make = (cls) => {
-    const i = h('input', { type: 'file', class: cls, accept: accept || null, multiple: multiple || null });
+    const i = h('input', { type: 'file', class: cls, accept: accept || null, multiple: multiple || null, capture: capture || null });
     i.addEventListener('change', () => { const f = [...(i.files || [])]; i.value = ''; if (f.length) onFiles(f); });
     return i;
   };
   const hidden = make('vh');
-  const zone = h('div', { class: 'filebtn', role: 'button', tabindex: '0' }, label, h('small', { class: 'drop-hint' }, 'or drag the file here'));
+  const zone = h('div', { class: 'filebtn', role: 'button', tabindex: '0' }, label, hint ? h('small', { class: 'drop-hint' }, 'or drag the file here') : null);
   zone.addEventListener('click', () => hidden.click());
   zone.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); hidden.click(); } });
   zone.addEventListener('dragenter', (e) => { e.preventDefault(); zone.classList.add('over'); });
@@ -145,7 +145,10 @@ const initials = () => (data.profile.signatureEn || data.profile.nameEn || '¥ �
 const pageHead = (en, ja, ...right) => h('div', { class: 'pagehead' }, h('div', {}, h('h1', {}, en), ja ? h('div', { class: 'ja-sub' }, ja) : null), h('div', { class: 'row gap wrap' }, right));
 const backLink = () => h('a', { href: '#more', class: 'back m-only' }, '‹ Settings');
 
+let configLoaded = false;
+const needsGate = () => !data.clients.length && !data.jobs.length && !localStorage.getItem('fl_welcomed');
 function render() {
+  if (needsGate()) { fill($app, configLoaded ? gateView() : h('div', { class: 'gate' }, h('div', { class: 'gate-card' }, h('span', { class: 'logo big' }, '¥'), h('p', { class: 'muted' }, 'Loading…')))); return; }
   const [name, arg] = (location.hash.slice(1) || 'home').split('/');
   current = name;
   const view = (routes[name] || routes.home)(arg);
@@ -206,13 +209,14 @@ async function syncTap() {
   try {
     if (!D.isConnected()) await D.connect();
     await D.sync(); render(); toast('Synced with Google Drive');
+    backupPdfs().catch(() => {});
   } catch (e) { toast(e.message, 'bad'); }
 }
 let syncTimer = null;
 function scheduleSync() {
   clearTimeout(syncTimer);
   if (!D.isConnected()) return;
-  syncTimer = setTimeout(() => D.sync().then(() => { if (!sheetEl && !busy) render(); }).catch(() => {}), 4000);
+  syncTimer = setTimeout(() => D.sync().then(() => { if (!sheetEl && !busy) render(); return backupPdfs(); }).catch(() => {}), 4000);
 }
 
 function tabs() {
@@ -224,7 +228,7 @@ function tabs() {
 }
 function quickAdd() {
   openSheet('Add · 追加', h('div', { class: 'quick' },
-    [['briefcase', 'Log work', '仕事を記録', () => jobForm()], ['camera', 'Add receipt', '領収書', () => receiptForm()], ['file', 'New invoice', '請求書', () => invoiceForm()]]
+    [['camera', 'Snap receipt', '領収書を撮る', () => snapReceipt()], ['briefcase', 'Log work', '仕事を記録', () => jobForm()], ['file', 'New invoice', '請求書', () => invoiceForm()]]
       .map(([ic, en, ja, fn]) => h('button', { class: 'qa', onclick: () => { closeSheet(); fn(); } }, icon(ic), h('b', {}, en), h('small', {}, ja)))));
 }
 
@@ -560,7 +564,7 @@ routes.invoice = (id) => {
         const b = await D.receiptBlob(r).catch(() => null);
         if (b) files.push(new File([b], r.fileName || `receipt_${r.date}.jpg`, { type: b.type || r.mime || 'image/jpeg' })); else missing.push(r);
       }
-      if (D.isConnected()) D.saveInvoicePdf(inv, pdf).then(() => S.touch(inv)).catch(() => {});
+      if (D.isConnected()) D.saveInvoicePdf(inv, pdf).then(() => { inv.pdfFor = inv.updatedAt; S.saveQuiet(); }).catch(() => {});
       const mail = emailFor(inv, data, kind);
       const share = canShareFiles(files);
       fill(emailBox, h('div', { class: 'card mail' },
@@ -598,7 +602,7 @@ routes.invoice = (id) => {
       h('button', { class: 'btn', onclick: () => prepare('invoice') }, '✉️ Email invoice'),
       (st === 'overdue' || st === 'sent' || st === 'partial') ? h('button', { class: 'btn ghost', onclick: () => prepare('reminder') }, 'Reminder email') : null,
       h('button', { class: 'btn ghost', onclick: async () => { try { downloadFile(await invoicePdf(inv, data)); } catch (e) { toast(e.message, 'bad'); } } }, 'Download PDF'),
-      D.isConnected() ? h('button', { class: 'btn ghost', onclick: async () => { try { await D.saveInvoicePdf(inv, await invoicePdf(inv, data)); S.upsert('invoices', inv); toast('Saved to Drive'); } catch (e) { toast(e.message, 'bad'); } } }, 'Save to Drive') : null),
+      D.isConnected() ? h('button', { class: 'btn ghost', onclick: async () => { try { await D.saveInvoicePdf(inv, await invoicePdf(inv, data)); inv.pdfFor = inv.updatedAt; S.saveQuiet(); render(); toast('Saved to Drive'); } catch (e) { toast(e.message, 'bad'); } } }, 'Save to Drive') : null),
     emailBox,
     h('div', { class: 'row gap wrap' },
       inv.status === 'draft' ? h('button', { class: 'btn ghost', onclick: () => { inv.status = 'sent'; inv.sentDate = C.today(); S.upsert('invoices', inv); } }, 'Mark sent') : null,
@@ -638,7 +642,7 @@ const thumbs = new Map();
 routes.receipts = () => {
   const list = S.live('receipts').sort((a, b) => b.date.localeCompare(a.date));
   return h('div', { class: 'stack' },
-    pageHead('Receipts', '領収書', h('button', { class: 'btn', onclick: () => receiptForm() }, icon('plus'), 'Add receipt')),
+    pageHead('Receipts', '領収書', h('button', { class: 'btn', onclick: () => snapReceipt() }, icon('camera'), 'Snap receipt'), h('button', { class: 'btn ghost', onclick: () => receiptForm() }, icon('plus'), 'Add manually')),
     h('p', { class: 'small muted' }, h('b', {}, 'Paid back'), ' = the client pays you back (goes on the invoice as 立替金). ', h('b', {}, 'My cost'), ' = you paid it yourself (lowers your tax).'),
     !list.length ? h('p', { class: 'empty' }, 'No receipts yet. Snap one after every taxi.') : h('div', { class: 'card tight' }, h('div', { class: 'rows' }, list.map((r) => {
       const inv = C.invoiceForReceipt(r.id, data);
@@ -671,7 +675,7 @@ async function compressImage(file) {
   } catch { return file; }
 }
 
-function receiptForm(rc, preset = {}, onSaved = null) {
+function receiptForm(rc, preset = {}, onSaved = null, startFile = null) {
   const isNew = !rc;
   const r = rc ? { ...rc } : { id: S.uid('rc'), deleted: false, date: C.today(), amount: '', vendor: '', category: 'Taxi', type: 'reimb', jobId: '', clientId: '', notes: '', hasFile: false, ...preset };
   let newFile = null;
@@ -693,10 +697,13 @@ function receiptForm(rc, preset = {}, onSaved = null) {
   const fClient = sel(clientOptions(false).map(([v, t]) => [v, v ? t : 'No client']), r.clientId);
   const fNotes = h('textarea', { rows: 2 }, r.notes || '');
   const inv = rc ? C.invoiceForReceipt(rc.id, data) : null;
+  if (startFile) setTimeout(() => onFile([startFile]), 0);
 
   openSheet(isNew ? 'Add receipt' : 'Edit receipt', h('div', { class: 'form' },
     inv ? h('p', { class: 'notice' }, `On invoice #${inv.number}.`) : null,
-    filePicker('📸 Take photo / choose file', { accept: 'image/*,application/pdf', onFiles: onFile, fallback: false }), prev,
+    h('div', { class: 'grid2' },
+      filePicker('📷 Take photo', { accept: 'image/*', capture: 'environment', onFiles: onFile, fallback: false, hint: false }),
+      filePicker('📎 Choose file', { accept: 'image/*,application/pdf', onFiles: onFile, fallback: false })), prev,
     h('div', { class: 'grid2' }, field('Date', fDate), field('Amount ¥', fAmt)),
     h('div', { class: 'grid2' }, field('Shop / what', fVendor), field('Category', fCat)),
     field('Who pays?', fType), field('Job', fJob, 'Linking a job adds it to that job\'s invoice automatically'),
@@ -734,7 +741,7 @@ routes.more = () => h('div', { class: 'stack' },
       ['drive', 'cloud', 'Google Drive', D.isConnected() ? 'Connected' : (data.drive.lastSync ? 'Set up · tap Sync to sign in' : 'Not set up · guide inside')],
       ['email', 'mail', 'Email setup', localStorage.getItem('fl_mail_done') === '1' ? 'Set up' : 'How sending invoices works'],
       ['updates', 'upload', 'App updates', G.hasToken() ? `v${VERSION} · install updates here` : `v${VERSION} · set up in-app updates`],
-      ['data', 'archive', 'Backup & restore', 'Download a backup, load your starter file'],
+      ['data', 'archive', 'Backup', 'What\'s safely in Google Drive, back up now, restore'],
       ['help', 'book', 'Plain-English glossary', 'What all the Japanese tax words mean'],
     ].map(([k, ic, t, s]) => h('a', { class: 'rowi', href: `#${k}` }, h('span', { class: 'ibox' }, icon(ic)), h('div', { class: 'r-main' }, h('b', {}, t), h('small', {}, s)), icon('chevron', 'chev'))))),
   h('p', { class: 'small muted center' }, `Freelance Ledger v${VERSION}`));
@@ -824,7 +831,7 @@ routes.drive = () => {
     step(4, 'Set up the sign-in screen', p_('Click ', h('b', {}, 'Get started'), '. App name: Freelance Ledger. Support email: your Gmail → Next. Audience: ', h('b', {}, 'External'), ' → Next. Contact email: your Gmail → Next. Tick agree → ', h('b', {}, 'Create'), '.'), linkBtn(`${C_}/auth/overview`, 'Sign-in screen')),
     step(5, 'Add yourself as a tester', p_('Under ', h('b', {}, 'Test users'), ' click ', h('b', {}, 'Add users'), ', type your Gmail, Save. Without this Google blocks you.'), linkBtn(`${C_}/auth/audience`, 'Audience')),
     step(6, 'Create the Client ID', p_('Application type: ', h('b', {}, 'Web application'), '. Name: Ledger web. Under ', h('b', {}, 'Authorised JavaScript origins'), ' click Add URI and paste exactly this (no slash at the end):'), codeLine(location.origin), p_('Leave "redirect URIs" empty. Click ', h('b', {}, 'Create'), '.'), linkBtn(`${C_}/auth/clients/create`, 'Create client')),
-    step(7, 'Paste the Client ID below', p_('Google shows it in a popup. It ends in ', h('code', {}, '.apps.googleusercontent.com'), '. Paste it in the box below and tap Save. Lost the popup? Open Clients and click the name to see it again.'), linkBtn(`${C_}/auth/clients`, 'Clients')),
+    step(7, 'Paste the Client ID at the top of this page', p_('Google shows it in a popup. It ends in ', h('code', {}, '.apps.googleusercontent.com'), '. Scroll up to the ', h('b', {}, 'Google Client ID'), ' box at the top of this page, paste it and tap Save. Lost the popup? Open Clients and click the name to see it again.'), linkBtn(`${C_}/auth/clients`, 'Clients')),
     step(8, 'Connect', p_('Tap ', h('b', {}, 'Connect & sync'), '. Google warns "Google hasn\'t verified this app". That\'s normal for your own app: tap ', h('b', {}, 'Continue'), ', tick the Drive boxes, Continue.')),
     step(9, 'Share it with your other devices', p_('Tap ', h('b', {}, 'Use on all my devices'), ' (needs App updates set up). After that, any new phone or computer just opens the link and taps ', h('b', {}, 'Connect Google Drive'), '. No pasting. (The Client ID isn\'t secret, it only identifies your app to Google.)')),
     h('h4', {}, 'If something goes wrong'),
@@ -855,6 +862,7 @@ routes.drive = () => {
           set && D.isShared() ? chip('Shared with all devices ✓', 'paid') : null,
           h('button', { class: 'btn', disabled: !set || null, onclick: syncTap }, D.isConnected() ? 'Sync now' : 'Connect & sync'),
           D.isConnected() ? h('button', { class: 'btn ghost', onclick: () => { D.disconnect(); render(); } }, 'Disconnect') : null,
+          h('button', { class: 'btn ghost bad', onclick: signOutDevice }, 'Sign out of this device'),
           data.drive.lastSync ? h('a', { class: 'btn ghost', href: 'https://drive.google.com/drive/search?q=Freelance%20Ledger', target: '_blank', rel: 'noopener' }, 'Open Drive ↗') : null))),
     data.drive.lastSync ? h('details', {}, h('summary', {}, 'Show the setup guide again'), guide) : guide);
 };
@@ -964,16 +972,84 @@ routes.updates = () => {
     has ? h('details', {}, h('summary', {}, 'Show the setup guide again'), guide) : null);
 };
 
-routes.data = () => h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Backup & restore'),
-  h('div', { class: 'card' }, h('h3', {}, 'Backup file'),
-    h('p', { class: 'small' }, 'A full copy of your data (not receipt photos). Drive sync already does this. This is an extra safety net. Restoring merges the file into what\'s here, so it\'s also how you load your starter file.'),
-    h('div', { class: 'row gap wrap' },
-      h('button', { class: 'btn ghost', onclick: () => downloadFile(new File([JSON.stringify(S.exportable(), null, 1)], `freelance-ledger-backup-${C.today()}.json`, { type: 'application/json' })) }, 'Download backup'),
-    ),
-    h('h4', {}, 'Restore / load starter file'),
-    filePicker('📂 Choose backup or starter file (.json)', { onFiles: async (f) => {
-      try { S.importBackup(JSON.parse(await f[0].text())); toast('Loaded ✓'); } catch (err) { toast(err.message.includes('JSON') ? 'That file isn\'t a backup' : err.message, 'bad'); }
-    } })));
+/** Saves PDFs of sent invoices to Drive (new ones, and ones edited since their last PDF). */
+let pdfRunning = false;
+async function backupPdfs(onStep = () => {}) {
+  if (pdfRunning || !D.isConnected()) return 0;
+  pdfRunning = true;
+  let n = 0;
+  try {
+    const todo = S.live('invoices').filter((i) => i.status !== 'draft' && (!i.driveId || i.pdfFor !== i.updatedAt));
+    for (const inv of todo) {
+      onStep(`Saving invoice #${inv.number} (${++n} of ${todo.length})…`);
+      await D.saveInvoicePdf(inv, await invoicePdf(inv, data));
+      inv.pdfFor = inv.updatedAt;
+      S.saveQuiet();
+    }
+    if (n) { data.dirty = true; await D.sync(); }
+  } finally { pdfRunning = false; }
+  return n;
+}
+
+function backupStatus() {
+  const rcs = S.live('receipts').filter((r) => r.hasFile);
+  const invs = S.live('invoices').filter((i) => i.status !== 'draft');
+  return {
+    lastSync: data.drive.lastSync, inDrive: !!data.drive.dataFileId, dirty: !!data.dirty,
+    rcTotal: rcs.length, rcDone: rcs.filter((r) => r.driveId).length, rcWaiting: rcs.filter((r) => !r.driveId),
+    invTotal: invs.length, invDone: invs.filter((i) => i.driveId && i.pdfFor === i.updatedAt).length,
+    invWaiting: invs.filter((i) => !i.driveId || i.pdfFor !== i.updatedAt),
+  };
+}
+
+routes.data = () => {
+  const b = backupStatus();
+  const setUp = !!D.getClientId();
+  const line = h('p', { class: 'small muted' });
+  const allGood = b.inDrive && !b.dirty && !b.rcWaiting.length && !b.invWaiting.length;
+  const statRow = (label, done, total, ok) => h('div', { class: 'stat' },
+    h('span', { class: `tick ${ok ? 'on' : ''}` }, ok ? '✓' : '!'), h('span', { class: 'grow' }, label), h('b', {}, total == null ? done : `${done} / ${total}`));
+  const backupNow = async (e) => {
+    e.target.disabled = true;
+    try {
+      if (!D.isConnected()) await D.connect();
+      line.textContent = 'Syncing your data…';
+      await D.sync();
+      const n = await backupPdfs((t) => { line.textContent = t; });
+      toast(n ? `Backed up ✓ (${n} invoice PDF${n === 1 ? '' : 's'} saved)` : 'Backed up ✓');
+      render();
+    } catch (err) { e.target.disabled = false; line.textContent = ''; toast(err.message, 'bad'); }
+  };
+
+  return h('div', { class: 'stack' }, backLink(), pageHead('Backup', 'バックアップ'),
+    !setUp ? h('div', { class: 'notice warn' }, 'Google Drive isn\'t set up on this device yet, so nothing is backed up. ', h('a', { href: '#drive' }, 'Set it up →')) : null,
+    h('div', { class: `card backup ${allGood ? 'good' : ''}` },
+      h('div', { class: 'row between' },
+        h('div', {}, h('div', { class: 'kpi-value' }, allGood ? 'ALL SAFE' : 'NEEDS BACKUP'), h('div', { class: 'kpi-sub' }, `Last synced ${ago(b.lastSync)}`)),
+        h('button', { class: 'btn', disabled: !setUp || null, onclick: backupNow }, icon('sync'), 'Back up now')),
+      line,
+      h('div', { class: 'stats' },
+        statRow('Your data (clients, jobs, invoices, settings)', b.inDrive && !b.dirty ? 'In Drive' : b.inDrive ? 'Changes waiting' : 'Not yet', null, b.inDrive && !b.dirty),
+        statRow('Invoice PDFs', b.invDone, b.invTotal, !b.invWaiting.length),
+        statRow('Receipt photos', b.rcDone, b.rcTotal, !b.rcWaiting.length)),
+      b.rcWaiting.length ? h('p', { class: 'small muted' }, `Photos waiting: ${b.rcWaiting.slice(0, 6).map((r) => `${C.fmtDateSlash(r.date)} ${r.vendor || r.category}`).join(', ')}${b.rcWaiting.length > 6 ? '…' : ''}. They upload from the device they were taken on, so open the app there and sync.`) : null,
+      h('p', { class: 'small muted' }, 'Drafts aren\'t saved as PDFs until you send them.')),
+
+    h('div', { class: 'card' },
+      h('h3', {}, 'Where everything lives in your Google Drive'),
+      h('pre', { class: 'tree' }, 'My Drive\n└─ Freelance Ledger\n   ├─ Invoices\n   │  └─ 2026\n   │     └─ 26101_BiancoBianco_PorterAirDuck.pdf\n   └─ Receipts\n      └─ 2026\n         └─ 2026-10-13_Taxi_9400.jpg\n\n+ a hidden app file with all your data (only this app can read it)'),
+      h('div', { class: 'row gap wrap' },
+        h('a', { class: 'btn ghost', href: 'https://drive.google.com/drive/search?q=Freelance%20Ledger', target: '_blank', rel: 'noopener' }, 'Open in Google Drive ↗')),
+      h('p', { class: 'small muted' }, 'The app can only see files it created. It can\'t read anything else in your Drive.')),
+
+    h('div', { class: 'card' }, h('h3', {}, 'Extra safety copy'),
+      h('p', { class: 'small' }, 'Download a full copy of your data as a file (not the photos). Keep one somewhere safe now and then.'),
+      h('button', { class: 'btn ghost', onclick: () => downloadFile(new File([JSON.stringify(S.exportable(), null, 1)], `freelance-ledger-backup-${C.today()}.json`, { type: 'application/json' })) }, 'Download backup file'),
+      h('h4', {}, 'Restore / load starter file'),
+      filePicker('📂 Choose backup or starter file (.json)', { onFiles: async (f) => {
+        try { S.importBackup(JSON.parse(await f[0].text())); toast('Loaded ✓'); } catch (err) { toast(err.message.includes('JSON') ? 'That file isn\'t a backup' : err.message, 'bad'); }
+      } })));
+};
 
 routes.help = () => h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Plain-English glossary'),
   GLOSSARY.map(([w, r, d]) => h('div', { class: 'card' }, h('div', { class: 'row between' }, h('b', { class: 'ja' }, w), h('span', { class: 'small muted' }, r)), h('p', {}, d))),
@@ -983,22 +1059,62 @@ routes.help = () => h('div', { class: 'stack' }, backLink(), h('h1', {}, 'Plain-
 if (D.getClientId()) D.preload();
 if (localStorage.getItem('fl_updating_to') === VERSION) { localStorage.removeItem('fl_updating_to'); setTimeout(() => toast(`Updated to v${VERSION} ✓`), 600); }
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('./sw.js').catch(() => {});
-function welcome() {
-  if (data.clients.length || data.jobs.length || localStorage.getItem('fl_welcomed')) return;
-  const done = () => { localStorage.setItem('fl_welcomed', '1'); closeSheet(); render(); };
+/** Opens the camera straight away, then the receipt form with the photo in it. */
+function snapReceipt(preset = {}, onSaved = null) {
+  const i = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'vh' });
+  document.body.append(i);
+  i.addEventListener('change', () => { const f = i.files?.[0]; i.remove(); if (f) receiptForm(null, preset, onSaved, f); });
+  i.click();
+  setTimeout(() => i.remove(), 120000);
+}
+
+// ---------- sign-in screen (new device / no data yet) ----------
+let gateMsg = '';
+function gateView() {
   const hasId = !!D.getClientId();
-  openSheet('Welcome 👋', h('div', { class: 'stack' },
-    hasId ? h('div', {},
-      h('p', {}, h('b', {}, 'Using this on another device already?'), ' Connect Google Drive and all your data comes across.'),
-      h('button', { class: 'btn', onclick: async () => { try { await D.connect(); await D.sync(); done(); toast('All your data is here ✓'); } catch (e) { toast(e.message, 'bad'); } } }, icon('cloud'), 'Connect Google Drive')) : null,
-    h('div', {},
-      h('p', {}, hasId ? h('b', {}, 'First device?') : null, hasId ? ' ' : '', 'Load your starter file to get your details, clients and 2026 invoices in one go.'),
-      filePicker('📂 Choose starter file (.json)', { fallback: false, onFiles: async (f) => {
-        try { S.importBackup(JSON.parse(await f[0].text())); done(); toast('All loaded'); } catch (err) { toast(err.message.includes('JSON') ? 'That file isn\'t a starter file' : err.message, 'bad'); }
-      } })),
-    !hasId ? h('p', { class: 'small muted' }, 'Second device? Skip this and go to Settings → Google Drive.') : null), [
-    h('button', { class: 'btn ghost', onclick: done }, 'Skip'),
-  ]);
+  const enter = () => { localStorage.setItem('fl_welcomed', '1'); gateMsg = ''; render(); };
+  const signIn = async (e) => {
+    e.currentTarget.disabled = true;
+    gateMsg = 'Signing in…'; fill(msg, gateMsg);
+    try {
+      await D.connect(); fill(msg, 'Getting your data…'); await D.sync();
+      if (data.clients.length || data.jobs.length) { toast('Signed in. All your data is here ✓'); enter(); backupPdfs().catch(() => {}); }
+      else { gateMsg = 'Signed in, but this Google account has no Ledger data yet. First device? Load your starter file below.'; render(); }
+    } catch (err) { gateMsg = err.message; render(); }
+  };
+  const msg = h('p', { class: 'small gate-msg' }, gateMsg);
+  const cid = inp({ placeholder: 'xxxx.apps.googleusercontent.com' });
+  return h('div', { class: 'gate' }, h('div', { class: 'gate-card' },
+    h('span', { class: 'logo big' }, '¥'),
+    h('h1', {}, 'FREELANCE LEDGER'), h('div', { class: 'ja-sub' }, 'フリーランス台帳'),
+    hasId ? [
+      h('button', { class: 'btn google', onclick: signIn }, h('span', { class: 'g' }, 'G'), 'Sign in with Google'),
+      h('p', { class: 'small muted' }, 'Your invoices and receipts load from your own Google Drive, on any device.'),
+    ] : [
+      h('p', { class: 'small' }, 'Google sign-in isn\'t set up for this app yet. Paste your Google Client ID (one time), or set it up first.'),
+      h('div', { class: 'row gap' }, cid, h('button', { class: 'btn', onclick: () => {
+        if (!/\.apps\.googleusercontent\.com$/.test(cid.value.trim())) return toast('That doesn\'t look like a Client ID', 'bad');
+        D.setClientId(cid.value); D.preload(); render();
+      } }, 'Save')),
+      h('button', { class: 'btn ghost small', onclick: () => { enter(); go('drive'); } }, 'Open the setup guide'),
+    ],
+    msg,
+    h('div', { class: 'gate-alt' },
+      h('details', {}, h('summary', {}, 'First device? Load your starter file'),
+        filePicker('📂 Choose starter file (.json)', { fallback: false, onFiles: async (f) => {
+          try { S.importBackup(JSON.parse(await f[0].text())); toast('All loaded ✓'); enter(); } catch (err) { toast(err.message.includes('JSON') ? 'That file isn\'t a starter file' : err.message, 'bad'); }
+        } })),
+      h('button', { class: 'linkish', onclick: enter }, 'Continue without signing in'))));
+}
+
+async function signOutDevice() {
+  if (data.dirty && D.getClientId() && !confirmBox('This device has changes that aren\'t in Google Drive yet. Sign out and delete them anyway?')) return;
+  if (!confirmBox('Sign out and remove this device\'s copy? Everything stays safe in your Google Drive. You can sign in again any time.')) return;
+  D.disconnect();
+  await S.clearLocal();
+  localStorage.removeItem('fl_welcomed');
+  location.hash = '';
+  location.reload();
 }
 
 // Sync again when you come back to the app (e.g. after using it on your phone).
@@ -1017,7 +1133,7 @@ fetch(`config.json?t=${Date.now()}`, { cache: 'no-store' })
   .catch(() => null)
   .then((cfg) => {
     if (cfg?.googleClientId) { D.setSharedClientId(cfg.googleClientId); D.preload(); }
+    configLoaded = true;
     if (!sheetEl) render();
-    setTimeout(welcome, 200);
   });
 render();

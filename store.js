@@ -55,6 +55,11 @@ export function remove(name, id) {
   const item = data[name].find((x) => x.id === id);
   if (item) { item.deleted = true; item.updatedAt = now(); save(); }
 }
+/** Removes this device's copy (Drive keeps everything). */
+export async function clearLocal() {
+  localStorage.removeItem(KEY);
+  await new Promise((res) => { try { const r = indexedDB.deleteDatabase('fl_files'); r.onsuccess = r.onerror = r.onblocked = () => res(); } catch { res(); } });
+}
 export function setProfile(p) { data.profile = { ...p, updatedAt: now() }; save(); }
 export function setSettings(s) { data.settings = { ...data.settings, ...s, updatedAt: now() }; save(); }
 
