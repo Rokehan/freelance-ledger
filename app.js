@@ -1,12 +1,12 @@
-import * as C from './calc.js';
-import * as S from './store.js';
-import * as D from './drive.js';
-import { invoicePdf, invoicePreviewUrl } from './render.js';
-import { readReceipt } from './ocr.js';
-import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
-import * as G from './github.js';
+import * as C from './calc.js?v=1.7.1';
+import * as S from './store.js?v=1.7.1';
+import * as D from './drive.js?v=1.7.1';
+import { invoicePdf, invoicePreviewUrl } from './render.js?v=1.7.1';
+import { readReceipt } from './ocr.js?v=1.7.1';
+import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js?v=1.7.1';
+import * as G from './github.js?v=1.7.1';
 
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -164,6 +164,7 @@ const backLink = () => h('a', { href: '#more', class: 'back m-only' }, '‹ Sett
 let configLoaded = false;
 const needsGate = () => !data.clients.length && !data.jobs.length && !localStorage.getItem('fl_welcomed');
 function render() {
+  if ($app) $app.dataset.started = '1';
   if (needsGate()) { fill($app, configLoaded ? gateView() : h('div', { class: 'gate' }, h('div', { class: 'gate-card' }, h('span', { class: 'logo big' }, '¥'), h('p', { class: 'muted' }, 'Loading…')))); return; }
   const [name, arg] = (location.hash.slice(1) || 'home').split('/');
   current = name;

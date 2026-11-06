@@ -1,6 +1,6 @@
 // Draws invoice ops onto a canvas and turns it into a PDF (browser only).
-import { invoiceOps } from './layout.js';
-import { jpegsToPdf } from './pdf.js';
+import { invoiceOps } from './layout.js?v=1.7.1';
+import { jpegsToPdf } from './pdf.js?v=1.7.1';
 
 const FONT = '"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans JP","Noto Sans CJK JP","Yu Gothic","YuGothic",Meiryo,system-ui,sans-serif';
 const PT = 0.3528; // mm per pt

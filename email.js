@@ -1,5 +1,5 @@
 // Email text (JP keigo / EN) + sharing files to the Outlook app.
-import { invoiceTotals, yen, fmtDate } from './calc.js';
+import { invoiceTotals, yen, fmtDate } from './calc.js?v=1.7.1';
 
 export function emailFor(inv, data, kind = 'invoice') {
   const lang = inv.lang === 'en' ? 'en' : 'ja';

@@ -1,7 +1,7 @@
 // Google Drive sync. Uses Google Identity Services (token flow) + Drive REST.
 // Scopes: drive.file (only files this app creates) + drive.appdata (hidden data file).
-import { data, saveQuiet, mergeRemote, exportable, getFile, putFile } from './store.js';
-import { yearOf } from './calc.js';
+import { data, saveQuiet, mergeRemote, exportable, getFile, putFile } from './store.js?v=1.7.1';
+import { yearOf } from './calc.js?v=1.7.1';
 
 const SCOPES = 'https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.appdata';
 const API = 'https://www.googleapis.com/drive/v3';
