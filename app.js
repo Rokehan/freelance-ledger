@@ -1,12 +1,12 @@
-import * as C from './calc.js?v=1.7.1';
-import * as S from './store.js?v=1.7.1';
-import * as D from './drive.js?v=1.7.1';
-import { invoicePdf, invoicePreviewUrl } from './render.js?v=1.7.1';
-import { readReceipt } from './ocr.js?v=1.7.1';
-import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js?v=1.7.1';
-import * as G from './github.js?v=1.7.1';
+import * as C from './calc.js?v=1.7.2';
+import * as S from './store.js?v=1.7.2';
+import * as D from './drive.js?v=1.7.2';
+import { invoicePdf, invoicePreviewUrl } from './render.js?v=1.7.2';
+import { readReceipt } from './ocr.js?v=1.7.2';
+import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js?v=1.7.2';
+import * as G from './github.js?v=1.7.2';
 
-const VERSION = '1.7.1';
+const VERSION = '1.7.2';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -489,10 +489,15 @@ function jobForm(job, preset = {}) {
   const fQty = inp({ type: 'number', step: '0.5', inputmode: 'decimal', value: j.qty });
   const fUnit = sel([['day', 'days'], ['hour', 'hours'], ['item', 'item(s)']], j.unit);
   const fRate = inp({ type: 'number', inputmode: 'numeric', value: j.rate });
+  const fDisc = inp({ type: 'number', inputmode: 'decimal', min: '0', max: '100', step: '1', value: j.discount || '', placeholder: '0' });
+  const fDays = inp({ type: 'number', inputmode: 'decimal', min: '0', step: '0.5', value: j.days ?? '', placeholder: String(Math.max(1, jDates.length)) });
+  const daysRow = h('div', { class: 'grid2' }, field('Days to charge', fDays, 'Empty = every day in the period (last day counts).'), field('Discount %', fDisc));
   const fDates = datesControl(jDates, jMode, (d, m, prev) => {
     jDates = d; jMode = m;
-    // a 3-day run → 3 days, unless you've typed your own quantity
-    if (fUnit.value === 'day' && (Number(fQty.value) === prev || !Number(fQty.value))) { fQty.value = d.length; upd(); }
+    // day-rate work: a 3-day run → qty 3, unless you've typed your own quantity
+    if (fUnit.value === 'day' && (Number(fQty.value) === prev || !Number(fQty.value))) fQty.value = d.length;
+    fDays.placeholder = String(Math.max(1, d.length));
+    upd();
   });
   const fProj = inp({ value: j.project, placeholder: 'e.g. Porter Air Duck' });
   const fPos = inp({ value: j.position, placeholder: 'e.g. 2nd AC' });
@@ -500,8 +505,16 @@ function jobForm(job, preset = {}) {
   const fNotes = h('textarea', { rows: 2 }, j.notes || '');
   const fDirect = toggle('Paid without an invoice', j.direct, 'e.g. clamp rentals paid by Capsule');
   const fee = h('b', {}, money(C.jobFee(j)));
-  const upd = () => { fee.textContent = money((Number(fQty.value) || 0) * (Number(fRate.value) || 0)); };
-  fQty.oninput = upd; fRate.oninput = upd;
+  const how = h('div', { class: 'small muted how' });
+  const preview = () => ({ v: 2, qty: Number(fQty.value) || 0, rate: Number(fRate.value) || 0, unit: fUnit.value, dates: jDates, days: fDays.value === '' ? null : Number(fDays.value), discount: Number(fDisc.value) || 0 });
+  const upd = () => {
+    const p = preview(); const days = C.jobDays(p);
+    fee.textContent = money(C.jobFee(p));
+    const u = { day: 'day', hour: 'h', item: 'item' }[p.unit] || '';
+    how.textContent = `${p.qty} ${u}${p.qty === 1 || u === 'h' ? '' : 's'} × ${money(p.rate)}${p.unit !== 'day' ? ` × ${days} day${days === 1 ? '' : 's'}` : ''}${p.discount ? ` − ${p.discount}%` : ''} = ${money(C.jobFee(p))}`;
+    fDays.closest?.('.field')?.classList.toggle('hidden', p.unit === 'day');
+  };
+  fQty.oninput = upd; fRate.oninput = upd; fDisc.oninput = upd; fDays.oninput = upd; fUnit.onchange = upd;
   fClient.onchange = () => {
     if (fClient.value === '__new') return newClientInline((c) => { jobForm(null, { ...collect(), clientId: c.id, lane: c.lane, unit: c.unit, rate: c.rate }); });
     const c = S.byId('clients', fClient.value);
@@ -509,17 +522,18 @@ function jobForm(job, preset = {}) {
   };
   fPos.oninput = () => { if (!fDesc.dataset.touched) fDesc.value = fPos.value; };
   fDesc.oninput = () => { fDesc.dataset.touched = '1'; };
-  const collect = () => ({ ...j, clientId: fClient.value === '__new' ? '' : fClient.value, lane: fLane.value, date: jDates[0], dates: jDates, dateMode: jMode, qty: Number(fQty.value) || 0, unit: fUnit.value, rate: Number(fRate.value) || 0, project: fProj.value.trim(), position: fPos.value.trim(), description: fDesc.value.trim() || fPos.value.trim(), direct: fDirect.box.checked, notes: fNotes.value });
+  const collect = () => ({ ...j, clientId: fClient.value === '__new' ? '' : fClient.value, lane: fLane.value, date: jDates[0], dates: jDates, dateMode: jMode, v: 2, qty: Number(fQty.value) || 0, unit: fUnit.value, rate: Number(fRate.value) || 0, days: fDays.value === '' ? null : Number(fDays.value), discount: Number(fDisc.value) || 0, project: fProj.value.trim(), position: fPos.value.trim(), description: fDesc.value.trim() || fPos.value.trim(), direct: fDirect.box.checked, notes: fNotes.value });
   const inv = job ? C.invoiceForJob(job.id, data) : null;
 
   openSheet(isNew ? 'Log work' : 'Edit job', h('div', { class: 'form' },
     inv ? h('p', { class: 'notice' }, `On invoice #${inv.number}. Changes update that invoice.`) : null,
     field('Client', fClient), field('Type', fLane), field('Dates worked', fDates),
     h('div', { class: 'grid3' }, field('Qty', fQty), field('Unit', fUnit), field('Rate ¥', fRate)),
-    h('div', { class: 'row between' }, h('span', { class: 'muted' }, 'Fee'), fee),
+    daysRow,
+    h('div', { class: 'row between' }, h('span', { class: 'muted' }, 'Fee'), fee), how,
     h('div', { class: 'grid2' }, field('Project', fProj), field('Position', fPos)),
     field('Invoice line', fDesc), fDirect.el, field('Notes', fNotes)),
-  [
+  (setTimeout(upd, 0), [
     !isNew ? h('button', { class: 'btn ghost bad', onclick: () => { if (inv) return toast('Remove it from the invoice first', 'bad'); if (confirmBox('Delete this job?')) { S.remove('jobs', j.id); closeSheet(); render(); } } }, 'Delete') : null,
     !isNew ? h('button', { class: 'btn ghost', onclick: () => { const c = collect(); closeSheet(); jobForm(null, { ...c, id: S.uid('jb'), date: C.today() }); } }, 'Duplicate') : null,
     h('button', { class: 'btn', onclick: () => {
@@ -528,7 +542,7 @@ function jobForm(job, preset = {}) {
       if (!c.date) return toast('Add the days you worked', 'bad');
       S.upsert('jobs', c); closeSheet(); render(); toast(isNew ? 'Work logged' : 'Saved');
     } }, 'Save'),
-  ]);
+  ]));
 }
 
 // =====================================================================

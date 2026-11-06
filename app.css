@@ -344,3 +344,5 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; filter:
 @media (max-width: 420px) { .dates .grid2 { grid-template-columns: 1fr; } }
 
 .how { font-family: var(--pixel); color: var(--neon3); }
+
+.field.hidden { display: none; }

@@ -1,6 +1,6 @@
 // In-app updater: publishes new app files to your GitHub repo in one commit.
 // GitHub Pages then republishes the site and every device picks it up.
-import { unzip } from './unzip.js?v=1.7.1';
+import { unzip } from './unzip.js?v=1.7.2';
 
 const API = 'https://api.github.com';
 const K = { owner: 'fl_gh_owner', repo: 'fl_gh_repo', token: 'fl_gh_token', branch: 'fl_gh_branch' };

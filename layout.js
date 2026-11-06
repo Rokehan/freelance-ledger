@@ -1,6 +1,6 @@
 // Builds an A4 invoice as a list of drawing ops (units: mm, font size: pt).
 // Pure: the browser draws the ops on a canvas, tests can draw them anywhere.
-import { invoiceTotals, jobLine, fmtDate, fmtDateSlash, fmtDates, datesOf, num, lineDays, lineAmount } from './calc.js?v=1.7.1';
+import { invoiceTotals, jobLine, fmtDate, fmtDateSlash, fmtDates, datesOf, num, lineDays, lineAmount } from './calc.js?v=1.7.2';
 
 const L = 18, R = 192;               // page margins (A4 = 210 x 297)
 const INK = '#1d1d1f', MUTED = '#6b6b70', RULE = '#b8b8bd', FILL = '#ececef', ACCENT = '#1f6f78';

@@ -94,7 +94,17 @@ export function lineAmount(l) {
   return Math.round(gross * (1 - disc / 100));
 }
 
-export function jobFee(job) { return Math.round((Number(job.qty) || 0) * (Number(job.rate) || 0)); }
+/** Days a job is charged for. Day-rate work: already in qty (1 × days). Items/hours rented over a period: × days. */
+export function jobDays(job) {
+  if (!job || !(job.v >= 2) || (job.unit || 'day') === 'day') return 1;
+  if (job.days != null && job.days !== '') return Math.max(0, Number(job.days) || 0);
+  return Math.max(1, datesOf(job).length);
+}
+/** qty × rate (× days for rentals), minus the discount %. */
+export function jobFee(job) {
+  const disc = Math.min(100, Math.max(0, Number(job.discount) || 0));
+  return Math.round((Number(job.qty) || 0) * (Number(job.rate) || 0) * jobDays(job) * (1 - disc / 100));
+}
 
 const alive = (x) => x && !x.deleted;
 
@@ -262,6 +272,9 @@ export function jobLine(job, lang) {
   const label = job.dateLabel || fmtDates(datesOf(job));
   const u = UNITS[job.unit] || UNITS.day;
   const q = Number(job.qty) || 0;
-  const qty = lang === 'ja' ? `${q}${u.ja}` : `${q} ${q === 1 ? u.en : u.enPl}`;
-  return { text: label ? `${desc}${desc ? '  ' : ''}${label}` : desc, qty, rate: Number(job.rate) || 0, amount: jobFee(job) };
+  const days = jobDays(job), disc = Number(job.discount) || 0;
+  let qty = lang === 'ja' ? `${q}${u.ja}` : `${q} ${q === 1 ? u.en : u.enPl}`;
+  if (days > 1) qty += lang === 'ja' ? ` × ${days}日` : ` × ${days} days`;
+  const d = disc ? (lang === 'ja' ? `（${disc}%割引）` : ` (${disc}% off)`) : '';
+  return { text: [`${desc}${d}`.trim(), label].filter(Boolean).join('  '), qty, rate: Number(job.rate) || 0, amount: jobFee(job) };
 }
