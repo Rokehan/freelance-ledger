@@ -6,7 +6,7 @@ import { readReceipt } from './ocr.js';
 import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js';
 import * as G from './github.js';
 
-const VERSION = '1.6.2';
+const VERSION = '1.7.0';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -574,25 +574,39 @@ function invoiceForm(inv, preset = {}) {
       st.clientId ? [
         h('h4', {}, 'Invoice lines'),
         st.lines.length ? h('div', { class: 'lines' }, st.lines.map((l, idx) => {
-          const qty = h('input', { type: 'number', value: l.qty ?? 1, min: '0', step: '0.5', inputmode: 'decimal', oninput: (e) => { l.qty = Number(e.target.value) || 0; refresh(); } });
-          const total = h('b', { class: 'line-total' }, money((Number(l.qty) || 0) * (Number(l.rate) || 0)));
-          const refresh = () => { total.textContent = money((Number(l.qty) || 0) * (Number(l.rate) || 0)); fill(totalsBox, totalsView()); };
-          return h('div', { class: 'line-card' },
+          const num = (v, o = {}) => h('input', { type: 'number', inputmode: 'decimal', min: '0', value: v ?? '', ...o });
+          const total = h('b', { class: 'line-total' });
+          const how = h('div', { class: 'small muted how' });
+          const daysBox = num(l.days ?? '', { step: '0.5', placeholder: String(Math.max(1, C.datesOf(l).length)) });
+          const refresh = () => {
+            const d = C.lineDays(l), q = Number(l.qty) || 0, r = Number(l.rate) || 0, disc = Number(l.discount) || 0;
+            total.textContent = money(C.lineAmount(l));
+            how.textContent = `${q} × ${money(r)} × ${d} day${d === 1 ? '' : 's'}${disc ? ` − ${disc}%` : ''} = ${money(C.lineAmount(l))}`;
+            daysBox.placeholder = String(Math.max(1, C.datesOf(l).length));
+            fill(totalsBox, totalsView());
+          };
+          daysBox.addEventListener('input', () => { l.days = daysBox.value === '' ? null : Number(daysBox.value); refresh(); });
+          const card = h('div', { class: 'line-card' },
             h('div', { class: 'row gap' },
-              h('input', { class: 'grow', list: 'line-presets', value: l.description || '', placeholder: 'e.g. Camera Assistant Shoot Day', oninput: (e) => { l.description = e.target.value; } }),
+              h('input', { class: 'grow', list: 'line-presets', value: l.description || '', placeholder: 'e.g. Camera Assistant Shoot Day / Kit rental', oninput: (e) => { l.description = e.target.value; } }),
               h('button', { type: 'button', class: 'icon', 'aria-label': 'Remove line', onclick: () => { st.lines = st.lines.filter((_, i) => i !== idx); draw(); } }, '×')),
             h('div', { class: 'grid3' },
-              field('Qty', qty),
-              field('Rate ¥', h('input', { type: 'number', value: l.rate || '', min: '0', step: '1', inputmode: 'numeric', placeholder: '0', oninput: (e) => { l.rate = Number(e.target.value) || 0; refresh(); } })),
+              field('Qty', num(l.qty ?? 1, { step: '1', oninput: (e) => { l.qty = Number(e.target.value) || 0; refresh(); } })),
+              field('Rate ¥ (per day)', num(l.rate || '', { step: '1', inputmode: 'numeric', placeholder: '0', oninput: (e) => { l.rate = Number(e.target.value) || 0; refresh(); } })),
+              field('Discount %', num(l.discount || '', { step: '1', max: '100', placeholder: '0', oninput: (e) => { l.discount = Math.min(100, Number(e.target.value) || 0); refresh(); } }))),
+            field('Dates (usage period)', datesControl(C.datesOf(l).length ? C.datesOf(l) : [st.issueDate], l.dateMode, (d, m) => {
+              l.dates = d; l.date = d[0]; l.dateMode = m; refresh();
+            })),
+            h('div', { class: 'grid2' },
+              field('Days to charge', daysBox, 'Empty = every day in the period. Type your own (e.g. 3-day week).'),
               h('div', { class: 'field' }, h('span', { class: 'lbl' }, 'Line total'), total)),
-            field('Dates', datesControl(C.datesOf(l).length ? C.datesOf(l) : [st.issueDate], l.dateMode, (d, m, prev) => {
-              l.dates = d; l.date = d[0]; l.dateMode = m;
-              if (Number(l.qty) === prev) { l.qty = d.length; qty.value = d.length; refresh(); }
-            })));
+            how);
+          refresh();
+          return card;
         })) : null,
         h('datalist', { id: 'line-presets' }, ['Camera Assistant Shoot Day', 'Camera Assistant Prep Day', 'Camera Assistant Travel Day', 'Camera Assistant Wrap Day', 'Transcoding', 'Overtime', 'Kit rental', '1st AC Shoot Day', '2nd AC Shoot Day', 'DIT / Data wrangling'].map((v) => h('option', { value: v }))),
-        h('button', { class: 'btn ghost small', onclick: () => { st.lines.push({ id: S.uid('ln'), description: '', date: st.issueDate, dates: [st.issueDate], qty: 1, rate: 0 }); draw(); } }, '+ Add line'),
-        h('p', { class: 'small muted' }, 'Description, quantity and rate are editable for every invoice. Examples: Camera Assistant Shoot Day, travel day, prep day, transcoding.'),
+        h('button', { class: 'btn ghost small', onclick: () => { st.lines.push({ id: S.uid('ln'), v: 2, description: '', date: st.issueDate, dates: [st.issueDate], qty: 1, rate: 0, days: null, discount: 0 }); draw(); } }, '+ Add line'),
+        h('p', { class: 'small muted' }, 'Line total = qty × rate × days charged − discount. For a one-off fee (e.g. transcoding), leave it on one day.'),
         h('h4', {}, 'Work on this invoice'),
         openJobs.length ? h('div', { class: 'checks' }, openJobs.map((j) => h('label', { class: 'check' },
           h('input', { type: 'checkbox', checked: st.jobIds.includes(j.id), onchange: (e) => {

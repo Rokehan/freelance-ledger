@@ -80,6 +80,20 @@ export function withholding(fees) {
   return Math.floor(1000000 * WH_RATE + (f - 1000000) * WH_RATE_HIGH);
 }
 
+/** Days charged on an invoice line: your own number, or every day in the dates you picked. Old lines (before v1.7) = 1. */
+export function lineDays(l) {
+  if (!l) return 0;
+  if (!(l.v >= 2)) return 1;
+  if (l.days != null && l.days !== '') return Math.max(0, Number(l.days) || 0);
+  return Math.max(1, datesOf(l).length);
+}
+/** qty × rate × days, minus the discount %. */
+export function lineAmount(l) {
+  const gross = (Number(l.qty) || 0) * (Number(l.rate) || 0) * lineDays(l);
+  const disc = Math.min(100, Math.max(0, Number(l.discount) || 0));
+  return Math.round(gross * (1 - disc / 100));
+}
+
 export function jobFee(job) { return Math.round((Number(job.qty) || 0) * (Number(job.rate) || 0)); }
 
 const alive = (x) => x && !x.deleted;
@@ -89,7 +103,7 @@ export function invoiceTotals(inv, data) {
   const jobs = (inv.jobIds || []).map((id) => data.jobs.find((j) => j.id === id)).filter(alive);
   const receipts = (inv.receiptIds || []).map((id) => data.receipts.find((r) => r.id === id)).filter(alive);
   const lines = (inv.lines || []).filter((l) => l && !l.deleted);
-  const lineTotal = lines.reduce((s, l) => s + Math.round((Number(l.qty) || 0) * (Number(l.rate) || 0)), 0);
+  const lineTotal = lines.reduce((s, l) => s + lineAmount(l), 0);
   const fees = jobs.reduce((s, j) => s + jobFee(j), 0) + lineTotal;
   const tax = inv.addTax ? Math.floor(fees * TAX_RATE) : 0;
   const wh = inv.withhold ? withholding(fees) : 0;
@@ -165,7 +179,7 @@ export function incomeEntries(data) {
     const t = invoiceTotals(inv, data);
     const client = data.clients.find((c) => c.id === inv.clientId);
     for (const l of lines) {
-      const fee = Math.round((Number(l.qty) || 0) * (Number(l.rate) || 0));
+      const fee = lineAmount(l);
       const share = t.fees ? fee / t.fees : 0;
       const ds = datesOf(l);
       push(ds.length ? ds : [inv.issueDate].filter(Boolean), fee, t.tax * share, t.wh * share, { kind: 'line', item: l, inv, lane: l.lane || client?.lane || 'camera', direct: false });

@@ -342,3 +342,5 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; filter:
 .dates .seg { width: 100%; display: grid; grid-template-columns: repeat(3, 1fr); }
 .dates .seg button { padding: .5rem .3rem; touch-action: manipulation; }
 @media (max-width: 420px) { .dates .grid2 { grid-template-columns: 1fr; } }
+
+.how { font-family: var(--pixel); color: var(--neon3); }
