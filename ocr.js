@@ -1,6 +1,6 @@
 // Reads receipt photos ON THIS DEVICE (Tesseract.js). The photo never leaves your phone/computer.
 // First use downloads the reader (~10 MB, Japanese + English), then it's cached for offline use.
-import { parseReceipt, paperBox } from './receipt-parse.js?v=1.7.2';
+import { parseReceipt, paperBox } from './receipt-parse.js?v=1.8.0';
 
 const SRC = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 let scriptP = null, workerP = null, progressFn = null;

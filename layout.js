@@ -1,6 +1,6 @@
 // Builds an A4 invoice as a list of drawing ops (units: mm, font size: pt).
 // Pure: the browser draws the ops on a canvas, tests can draw them anywhere.
-import { invoiceTotals, jobLine, fmtDate, fmtDateSlash, fmtDates, datesOf, num, lineDays, lineAmount } from './calc.js?v=1.7.2';
+import { invoiceTotals, jobLine, fmtDate, fmtDateSlash, fmtDates, datesOf, num, lineDays, lineAmount } from './calc.js?v=1.8.0';
 
 const L = 18, R = 192;               // page margins (A4 = 210 x 297)
 const INK = '#1d1d1f', MUTED = '#6b6b70', RULE = '#b8b8bd', FILL = '#ececef', ACCENT = '#1f6f78';
@@ -89,8 +89,8 @@ export function invoiceOps(inv, data) {
     const qtyText = days > 1 || l.v >= 2 && l.days != null
       ? (lang === 'ja' ? `${q} × ${days}日` : `${q} × ${days} ${days === 1 ? 'day' : 'days'}`)
       : String(q);
-    const discText = disc ? (lang === 'ja' ? `（${disc}%割引）` : ` (${disc}% off)`) : '';
-    return { text: `${l.description || ''}${discText}${datesOf(l).length ? '  ' + fmtDates(datesOf(l)) : ''}`, qty: qtyText, rate: Number(l.rate) || 0, amount: lineAmount(l) };
+    const gross = Math.round(q * (Number(l.rate) || 0) * days);
+    return { text: `${l.description || ''}${datesOf(l).length ? '  ' + fmtDates(datesOf(l)) : ''}`, qty: qtyText, rate: Number(l.rate) || 0, disc, gross, amount: lineAmount(l) };
   })); 
   const rLines = [...tot.receipts].sort((a, b) => (a.date || '').localeCompare(b.date || '')).map((r) => ({ text: `${r.vendor || r.category || ''}${r.date ? '  ' + fmtDateSlash(r.date) : ''}`, amount: Math.round(r.amount) }));
   const sumRows = 1 + (inv.addTax ? 1 : 0) + (inv.withhold ? 1 : 0) + ((inv.addTax || inv.withhold) ? 1 : 0);
@@ -100,30 +100,38 @@ export function invoiceOps(inv, data) {
   const rh = Math.max(4.6, Math.min(7, avail / rows));
   const fs = rh < 5.6 ? 7.6 : 8.5;
 
-  const C = [L, 112, 132, 162, R]; // column edges
+  // Discount column only when a line actually has a discount
+  const anyDisc = lines.some((l) => l.disc);
+  const C = anyDisc ? [L, 96, 118, 140, 168, R] : [L, 112, 132, 162, R]; // column edges
+  const END = C[C.length - 1], AMT = C.length - 2; // last column = amount
+  const heads = (label) => (anyDisc ? [label, t.qty, t.unit, lang === 'ja' ? '割引' : 'Discount', t.total] : [label, t.qty, t.unit, t.total]);
   const header = (yy, label) => {
     rect(L, yy, R - L, rh, { fill: FILL });
-    [label, t.qty, t.unit, t.total].forEach((h, i) => text((C[i] + C[i + 1]) / 2, yy + rh * 0.68, h, fs, { align: 'center', bold: true }));
+    heads(label).forEach((hd, i) => text((C[i] + C[i + 1]) / 2, yy + rh * 0.68, hd, fs, { align: 'center', bold: true }));
     line(L, yy, R, yy, 0.3, RULE); line(L, yy + rh, R, yy + rh, 0.3, RULE);
   };
+  // cells: [description, qty, unit price, amount, discount?]
   const row = (yy, cells) => {
     text(C[0] + 1.5, yy + rh * 0.68, cells[0], fs, { maxW: C[1] - C[0] - 3 });
-    if (cells[1] != null) text((C[1] + C[2]) / 2, yy + rh * 0.68, cells[1], fs, { align: 'center' });
+    if (cells[1] != null) text((C[1] + C[2]) / 2, yy + rh * 0.68, cells[1], fs, { align: 'center', maxW: C[2] - C[1] - 2 });
     if (cells[2] != null) text(C[3] - 1.5, yy + rh * 0.68, cells[2], fs, { align: 'right' });
-    text(C[4] - 1.5, yy + rh * 0.68, cells[3], fs, { align: 'right' });
+    if (anyDisc && cells[4]) text(C[4] - 1.5, yy + rh * 0.68, cells[4], fs * 0.94, { align: 'right', maxW: C[4] - C[3] - 2, color: '#b0303a' });
+    text(END - 1.5, yy + rh * 0.68, cells[3], fs, { align: 'right' });
     line(L, yy + rh, R, yy + rh, 0.15, '#d6d6da');
   };
+  const SUMX = anyDisc ? C[2] : C[1];
   const sumRow = (yy, label, value, o = {}) => {
-    if (o.fill) rect(C[1], yy, R - C[1], rh, { fill: o.fill });
-    text(C[1] + 1.5, yy + rh * 0.68, label, fs, { bold: !!o.bold });
-    text(C[4] - 1.5, yy + rh * 0.68, value, fs, { align: 'right', bold: !!o.bold });
-    line(C[1], yy + rh, R, yy + rh, 0.2, RULE);
+    if (o.fill) rect(SUMX, yy, R - SUMX, rh, { fill: o.fill });
+    text(SUMX + 1.5, yy + rh * 0.68, label, fs, { bold: !!o.bold });
+    text(END - 1.5, yy + rh * 0.68, value, fs, { align: 'right', bold: !!o.bold });
+    line(SUMX, yy + rh, R, yy + rh, 0.2, RULE);
   };
+  const discCell = (l) => (l.disc ? `-${l.disc}% (-${num(l.gross - l.amount)})` : '');
 
   let ty = top;
   header(ty, t.item); ty += rh;
   if (!lines.length) { row(ty, ['—', null, null, '']); ty += rh; }
-  for (const l of lines) { row(ty, [l.text, l.qty, money(l.rate), money(l.amount)]); ty += rh; }
+  for (const l of lines) { row(ty, [l.text, l.qty, money(l.rate), money(l.amount), discCell(l)]); ty += rh; }
   sumRow(ty, t.sub, money(tot.fees)); ty += rh;
   if (inv.addTax) { sumRow(ty, t.tax, money(tot.tax)); ty += rh; }
   if (inv.withhold) { sumRow(ty, t.wh, '-' + money(tot.wh)); ty += rh; }
@@ -136,9 +144,9 @@ export function invoiceOps(inv, data) {
     sumRow(ty, t.reimbSub, money(tot.reimb)); ty += rh;
   }
   ty += 2;
-  rect(C[1], ty, R - C[1], rh + 1.5, { fill: ACCENT });
-  text(C[1] + 1.5, ty + (rh + 1.5) * 0.68, t.grand, fs + 0.5, { bold: true, color: '#ffffff' });
-  text(C[4] - 1.5, ty + (rh + 1.5) * 0.68, `¥${num(tot.total)}`, fs + 1, { bold: true, color: '#ffffff', align: 'right' });
+  rect(SUMX, ty, R - SUMX, rh + 1.5, { fill: ACCENT });
+  text(SUMX + 1.5, ty + (rh + 1.5) * 0.68, t.grand, fs + 0.5, { bold: true, color: '#ffffff' });
+  text(END - 1.5, ty + (rh + 1.5) * 0.68, `¥${num(tot.total)}`, fs + 1, { bold: true, color: '#ffffff', align: 'right' });
 
   // ---- bank details ----
   let by = Math.max(ty + rh + 12, 244);

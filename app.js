@@ -1,12 +1,12 @@
-import * as C from './calc.js?v=1.7.2';
-import * as S from './store.js?v=1.7.2';
-import * as D from './drive.js?v=1.7.2';
-import { invoicePdf, invoicePreviewUrl } from './render.js?v=1.7.2';
-import { readReceipt } from './ocr.js?v=1.7.2';
-import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js?v=1.7.2';
-import * as G from './github.js?v=1.7.2';
+import * as C from './calc.js?v=1.8.0';
+import * as S from './store.js?v=1.8.0';
+import * as D from './drive.js?v=1.8.0';
+import { invoicePdf, invoicePreviewUrl } from './render.js?v=1.8.0';
+import { readReceipt } from './ocr.js?v=1.8.0';
+import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js?v=1.8.0';
+import * as G from './github.js?v=1.8.0';
 
-const VERSION = '1.7.2';
+const VERSION = '1.8.0';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -134,6 +134,7 @@ function go(hash) { location.hash = hash; }
 window.addEventListener('hashchange', render);
 // ---------- icons (line icons, inline SVG) ----------
 const ICONS = {
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2.5"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   home: '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/>',
   briefcase: '<rect x="2.5" y="7" width="19" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M2.5 12.5h19"/>',
   file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M8 13h8M8 17h5"/>',
@@ -436,46 +437,133 @@ routes.jobs = () => {
 function newClientInline(onDone) { clientForm(null, (c) => onDone(c)); }
 
 /**
- * Work-date picker: one day, a run of days (start → end), or separate days.
+ * Work-date picker with a built-in calendar (hotel-booking style).
+ * One day: tap a day. Run of days: tap first day (stays lit), then last day, or drag across.
+ * Separate days: calendar stays open, tap days on/off, drag to add (or remove) a whole run.
  * onChange(dates, mode, prevCount) fires on every change.
  */
+const WD = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+const WDS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const addDays = (s, n) => { const d = C.parseYmd(s); d.setDate(d.getDate() + n); return C.ymd(d); };
+const nice = (s) => s ? `${C.fmtDateSlash(s)} ${WDS[C.parseYmd(s).getDay()]}` : '';
+/** [[start, end], …] for each unbroken run of days */
+const runsOf = (ds) => { const out = []; for (const d of ds) { const r = out[out.length - 1]; if (r && addDays(r[1], 1) === d) r[1] = d; else out.push([d, d]); } return out; };
+const between = (a, b) => (a <= b ? C.expandRange(a, b) : C.expandRange(b, a));
+
 function datesControl(initial, mode0, onChange) {
-  let dates = initial && initial.length ? [...initial] : [C.today()];
+  let dates = initial && initial.length ? [...new Set(initial)].sort() : [C.today()];
   let mode = mode0 || (dates.length > 1 ? (C.isConsecutive(dates) ? 'range' : 'list') : 'single');
+  let open = false; let pending = null; // range: first day picked, waiting for the last
+  let view = C.parseYmd(dates[0]); view.setDate(1);
   const wrap = h('div', { class: 'dates' });
-  const emit = (prev) => onChange(dates, mode, prev);
-  const draw = () => {
+  const set = (next) => { const prev = dates.length; dates = [...new Set(next)].sort(); onChange(dates, mode, prev); };
+  const show = (d) => { view = C.parseYmd(d); view.setDate(1); };
+
+  function calendar() {
+    const y = view.getFullYear(); const m = view.getMonth();
+    const first = new Date(y, m, 1); const lead = (first.getDay() + 6) % 7; const n = new Date(y, m + 1, 0).getDate();
+    const on = new Set(dates); const today = C.today();
+    const lit = (d) => (mode === 'range' && pending ? d === pending : on.has(d));
+    const cells = [];
+    for (let i = 0; i < lead; i++) cells.push(h('div', { class: 'cal-d blank' }));
+    for (let i = 1; i <= n; i++) {
+      const d = C.ymd(new Date(y, m, i)); const col = (lead + i - 1) % 7;
+      const s = lit(d); const cls = ['cal-d', `c${col}`, col >= 5 ? 'we' : ''];
+      if (s) cls.push('sel', lit(addDays(d, -1)) ? '' : 'rs', lit(addDays(d, 1)) ? '' : 're');
+      if (d === today) cls.push('today');
+      if (d === pending) cls.push('pending');
+      cells.push(h('div', { class: cls.filter(Boolean).join(' '), 'data-d': d }, h('span', {}, String(i))));
+    }
+    const grid = h('div', { class: 'cal-grid' }, cells);
+    // tap + drag, mouse and touch alike
+    let anchor = null, cur = null, moved = false;
+    const cellAt = (e) => { const t = document.elementFromPoint?.(e.clientX, e.clientY) || e.target; return t?.closest?.('[data-d]'); };
+    const paint = (from, to, remove) => {
+      const span = from && to ? new Set(between(from, to)) : new Set();
+      grid.querySelectorAll('[data-d]').forEach((c) => { const inS = span.has(c.dataset.d); c.classList.toggle('pv', inS && !remove); c.classList.toggle('pvx', inS && !!remove); });
+    };
+    const removing = () => mode === 'list' && on.has(anchor);
+    grid.addEventListener('pointerdown', (e) => {
+      const c = cellAt(e); if (!c) return;
+      e.preventDefault(); anchor = cur = c.dataset.d; moved = false;
+      try { grid.setPointerCapture(e.pointerId); } catch {}
+      paint(mode === 'range' && pending ? pending : anchor, cur, removing());
+    });
+    grid.addEventListener('pointermove', (e) => {
+      if (!anchor) { // hover preview while choosing the last day (computer)
+        if (mode === 'range' && pending && e.pointerType === 'mouse') { const c = cellAt(e); paint(pending, c ? c.dataset.d : null); }
+        return;
+      }
+      const c = cellAt(e); if (!c || c.dataset.d === cur) return;
+      cur = c.dataset.d; moved = true;
+      paint(mode === 'range' && pending && !moved ? pending : anchor, cur, removing());
+    });
+    const end = () => {
+      if (!anchor) return;
+      const a = anchor, b = cur, drag = moved && a !== b; anchor = cur = null; moved = false;
+      if (mode === 'single') { set([b]); open = false; }
+      else if (mode === 'range') {
+        if (drag) { set(between(a, b)); pending = null; open = false; }
+        else if (!pending || b < pending) { pending = b; }
+        else { set(between(pending, b)); pending = null; open = false; }
+      } else if (drag) {
+        const span = between(a, b);
+        const next = on.has(a) ? dates.filter((d) => !span.includes(d)) : [...dates, ...span];
+        if (!next.length) { paint(); return toast('Keep at least one day', 'bad'); }
+        set(next);
+      } else {
+        const next = on.has(a) ? dates.filter((d) => d !== a) : [...dates, a];
+        if (!next.length) { paint(); return toast('Keep at least one day', 'bad'); }
+        set(next);
+      }
+      draw();
+    };
+    grid.addEventListener('pointerup', end);
+    grid.addEventListener('pointercancel', () => { anchor = null; paint(); });
+    grid.addEventListener('pointerleave', () => { if (!anchor) paint(); });
+    const nav = (k) => h('button', { type: 'button', class: 'cal-nav', 'aria-label': k < 0 ? 'Previous month' : 'Next month', onclick: () => { view = new Date(y, m + k, 1); draw(); } }, k < 0 ? '‹' : '›');
+    const tip = mode === 'single' ? 'Tap the day.' : mode === 'range' ? (pending ? `From ${nice(pending)}. Now tap the last day.` : 'Tap the first day, then the last. Or drag across.') : 'Tap each day you worked. Drag to add a run (drag over lit days to remove).';
+    return h('div', { class: 'cal' },
+      h('div', { class: 'cal-head' }, nav(-1), h('b', {}, `${MONTHS[m]} ${y}`), nav(1)),
+      h('div', { class: 'cal-wds' }, WD.map((w, i) => h('div', { class: `cal-wd${i >= 5 ? ' we' : ''}` }, w))),
+      grid,
+      h('div', { class: 'cal-foot' }, h('span', { class: 'small muted grow' }, tip),
+        h('button', { type: 'button', class: 'btn small', onclick: () => { pending = null; open = false; draw(); } }, 'Done')));
+  }
+
+  const box = (label, text, onclick, active) => h('button', { type: 'button', class: `datebox${active ? ' active' : ''}`, onclick },
+    h('span', { class: text ? '' : 'ph' }, text || label), icon('calendar'));
+
+  function draw() {
     const seg = h('div', { class: 'seg small' }, [['single', 'One day'], ['range', 'Run of days'], ['list', 'Separate days']].map(([k, l]) =>
       h('button', { type: 'button', class: mode === k ? 'on' : '', onclick: () => {
-        const prev = dates.length; mode = k;
+        if (mode === k) return;
+        const prev = dates.length; mode = k; pending = null;
         if (k === 'single') dates = [dates[0]];
-        else if (k === 'range') dates = C.expandRange(dates[0], dates[dates.length - 1] > dates[0] ? dates[dates.length - 1] : C.ymd(new Date(C.parseYmd(dates[0]).getTime() + 86400000)));
-        draw(); emit(prev);
+        else if (k === 'range') { dates = between(dates[0], dates[dates.length - 1]); if (dates.length === 1) { pending = dates[0]; } open = true; }
+        else open = true;
+        show(dates[0]); onChange(dates, mode, prev); draw();
       } }, l)));
     let body;
     if (mode === 'single') {
-      body = inp({ type: 'date', value: dates[0], onchange: (e) => { if (e.target.value) { const prev = dates.length; dates = [e.target.value]; emit(prev); } } });
+      body = box('Pick a day', nice(dates[0]), () => { open = !open; show(dates[0]); draw(); }, open);
     } else if (mode === 'range') {
-      const info = h('span', { class: 'chip sent' }, `${dates.length} days`);
-      const a = inp({ type: 'date', value: dates[0] }), b = inp({ type: 'date', value: dates[dates.length - 1] });
-      const upd = () => {
-        if (!a.value || !b.value) return;
-        const prev = dates.length;
-        dates = a.value <= b.value ? C.expandRange(a.value, b.value) : C.expandRange(b.value, a.value);
-        info.textContent = `${dates.length} day${dates.length === 1 ? '' : 's'}`; emit(prev);
-      };
-      a.onchange = upd; b.onchange = upd;
-      body = [h('div', { class: 'grid2' }, field('First day', a), field('Last day', b)), info];
+      const a = pending || dates[0]; const b = pending ? '' : dates[dates.length - 1];
+      body = [h('div', { class: 'grid2' },
+        field('First day', box('First day', nice(a), () => { pending = null; open = true; show(a); draw(); }, open && !pending)),
+        field('Last day', box('Tap the last day', nice(b), () => { pending = dates[0]; open = true; show(dates[dates.length - 1]); draw(); }, open && !!pending))),
+      h('span', { class: 'chip sent' }, pending ? 'pick the last day' : `${dates.length} day${dates.length === 1 ? '' : 's'}`)];
     } else {
-      const add = inp({ type: 'date' });
-      const addIt = () => { if (add.value && !dates.includes(add.value)) { const prev = dates.length; dates = [...dates, add.value].sort(); draw(); emit(prev); } };
-      add.onchange = addIt;
-      body = [h('div', { class: 'chips' }, dates.map((d) => h('span', { class: 'chip sent' }, C.fmtDateSlash(d), ' ',
-          h('button', { type: 'button', class: 'x', 'aria-label': 'Remove day', onclick: () => { if (dates.length > 1) { const prev = dates.length; dates = dates.filter((x) => x !== d); draw(); emit(prev); } } }, '×')))),
-        h('div', { class: 'row gap' }, add, h('button', { type: 'button', class: 'btn ghost small', onclick: addIt }, '+ Add day'))];
+      const yr = C.today().slice(0, 4);
+      const short = (d) => (d.startsWith(yr) ? d.slice(5).replace('-', '/') : C.fmtDateSlash(d));
+      body = [h('div', { class: 'chips' }, runsOf(dates).map(([s, e]) => h('span', { class: 'chip sent' },
+          s === e ? short(s) : `${short(s)}–${short(e)} · ${between(s, e).length}d`,
+          h('button', { type: 'button', class: 'x', 'aria-label': 'Remove these days', onclick: () => { const span = between(s, e); const next = dates.filter((d) => !span.includes(d)); if (!next.length) return toast('Keep at least one day', 'bad'); set(next); draw(); } }, '×')))),
+        open ? null : box('Pick days', `${dates.length} day${dates.length === 1 ? '' : 's'} picked · tap to add or change`, () => { open = true; show(dates[0]); draw(); }, false)];
     }
-    fill(wrap, seg, body);
-  };
+    fill(wrap, seg, body, open ? calendar() : null);
+  }
   draw();
   return wrap;
 }
@@ -607,7 +695,7 @@ function invoiceForm(inv, preset = {}) {
               h('button', { type: 'button', class: 'icon', 'aria-label': 'Remove line', onclick: () => { st.lines = st.lines.filter((_, i) => i !== idx); draw(); } }, '×')),
             h('div', { class: 'grid3' },
               field('Qty', num(l.qty ?? 1, { step: '1', oninput: (e) => { l.qty = Number(e.target.value) || 0; refresh(); } })),
-              field('Rate ¥ (per day)', num(l.rate || '', { step: '1', inputmode: 'numeric', placeholder: '0', oninput: (e) => { l.rate = Number(e.target.value) || 0; refresh(); } })),
+              field('Rate ¥/day', num(l.rate || '', { step: '1', inputmode: 'numeric', placeholder: '0', oninput: (e) => { l.rate = Number(e.target.value) || 0; refresh(); } })),
               field('Discount %', num(l.discount || '', { step: '1', max: '100', placeholder: '0', oninput: (e) => { l.discount = Math.min(100, Number(e.target.value) || 0); refresh(); } }))),
             field('Dates (usage period)', datesControl(C.datesOf(l).length ? C.datesOf(l) : [st.issueDate], l.dateMode, (d, m) => {
               l.dates = d; l.date = d[0]; l.dateMode = m; refresh();

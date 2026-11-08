@@ -275,6 +275,6 @@ export function jobLine(job, lang) {
   const days = jobDays(job), disc = Number(job.discount) || 0;
   let qty = lang === 'ja' ? `${q}${u.ja}` : `${q} ${q === 1 ? u.en : u.enPl}`;
   if (days > 1) qty += lang === 'ja' ? ` × ${days}日` : ` × ${days} days`;
-  const d = disc ? (lang === 'ja' ? `（${disc}%割引）` : ` (${disc}% off)`) : '';
-  return { text: [`${desc}${d}`.trim(), label].filter(Boolean).join('  '), qty, rate: Number(job.rate) || 0, amount: jobFee(job) };
+  const gross = Math.round(q * (Number(job.rate) || 0) * days);
+  return { text: [desc, label].filter(Boolean).join('  '), qty, rate: Number(job.rate) || 0, disc, gross, amount: jobFee(job) };
 }

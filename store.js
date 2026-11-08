@@ -1,5 +1,5 @@
 // App state: saved in localStorage, receipt files in IndexedDB, synced to Drive.
-import { DEFAULT_PROFILE, DEFAULT_SETTINGS } from './seed.js?v=1.7.2';
+import { DEFAULT_PROFILE, DEFAULT_SETTINGS } from './seed.js?v=1.8.0';
 
 const KEY = 'fl_data_v1';
 const COLLECTIONS = ['clients', 'jobs', 'receipts', 'invoices'];
