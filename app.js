@@ -1,12 +1,12 @@
-import * as C from './calc.js?v=1.8.0';
-import * as S from './store.js?v=1.8.0';
-import * as D from './drive.js?v=1.8.0';
-import { invoicePdf, invoicePreviewUrl } from './render.js?v=1.8.0';
-import { readReceipt } from './ocr.js?v=1.8.0';
-import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js?v=1.8.0';
-import * as G from './github.js?v=1.8.0';
+import * as C from './calc.js?v=1.8.1';
+import * as S from './store.js?v=1.8.1';
+import * as D from './drive.js?v=1.8.1';
+import { invoicePdf, invoicePreviewUrl } from './render.js?v=1.8.1';
+import { readReceipt } from './ocr.js?v=1.8.1';
+import { emailFor, canShareFiles, shareFiles, downloadFile, mailtoLink } from './email.js?v=1.8.1';
+import * as G from './github.js?v=1.8.1';
 
-const VERSION = '1.8.0';
+const VERSION = '1.8.1';
 const { data } = S;
 const $app = document.getElementById('app');
 
@@ -480,8 +480,13 @@ function datesControl(initial, mode0, onChange) {
     let anchor = null, cur = null, moved = false;
     const cellAt = (e) => { const t = document.elementFromPoint?.(e.clientX, e.clientY) || e.target; return t?.closest?.('[data-d]'); };
     const paint = (from, to, remove) => {
-      const span = from && to ? new Set(between(from, to)) : new Set();
-      grid.querySelectorAll('[data-d]').forEach((c) => { const inS = span.has(c.dataset.d); c.classList.toggle('pv', inS && !remove); c.classList.toggle('pvx', inS && !!remove); });
+      const list = from && to ? between(from, to) : []; const span = new Set(list);
+      const a = list[0], z = list[list.length - 1];
+      grid.querySelectorAll('[data-d]').forEach((c) => {
+        const d = c.dataset.d, inS = span.has(d), add = inS && !remove && list.length > 1;
+        c.classList.toggle('pv', add); c.classList.toggle('pvx', inS && !!remove);
+        c.classList.toggle('pvs', add && d === a); c.classList.toggle('pve', add && d === z);
+      });
     };
     const removing = () => mode === 'list' && on.has(anchor);
     grid.addEventListener('pointerdown', (e) => {
@@ -502,11 +507,12 @@ function datesControl(initial, mode0, onChange) {
     const end = () => {
       if (!anchor) return;
       const a = anchor, b = cur, drag = moved && a !== b; anchor = cur = null; moved = false;
-      if (mode === 'single') { set([b]); open = false; }
+      // every tap saves straight away; the calendar stays open until Done
+      if (mode === 'single') set([b]);
       else if (mode === 'range') {
-        if (drag) { set(between(a, b)); pending = null; open = false; }
-        else if (!pending || b < pending) { pending = b; }
-        else { set(between(pending, b)); pending = null; open = false; }
+        if (drag) { set(between(a, b)); pending = null; }
+        else if (!pending || b < pending) { pending = b; set([b]); }
+        else { set(between(pending, b)); pending = null; }
       } else if (drag) {
         const span = between(a, b);
         const next = on.has(a) ? dates.filter((d) => !span.includes(d)) : [...dates, ...span];
@@ -523,7 +529,7 @@ function datesControl(initial, mode0, onChange) {
     grid.addEventListener('pointercancel', () => { anchor = null; paint(); });
     grid.addEventListener('pointerleave', () => { if (!anchor) paint(); });
     const nav = (k) => h('button', { type: 'button', class: 'cal-nav', 'aria-label': k < 0 ? 'Previous month' : 'Next month', onclick: () => { view = new Date(y, m + k, 1); draw(); } }, k < 0 ? '‹' : '›');
-    const tip = mode === 'single' ? 'Tap the day.' : mode === 'range' ? (pending ? `From ${nice(pending)}. Now tap the last day.` : 'Tap the first day, then the last. Or drag across.') : 'Tap each day you worked. Drag to add a run (drag over lit days to remove).';
+    const tip = mode === 'single' ? 'Tap the day. Saved as you go.' : mode === 'range' ? (pending ? `From ${nice(pending)}. Now tap the last day.` : 'Tap the first day, then the last. Or drag across. Tap again to start a new run.') : 'Tap each day you worked. Drag to add a run (drag over lit days to remove).';
     return h('div', { class: 'cal' },
       h('div', { class: 'cal-head' }, nav(-1), h('b', {}, `${MONTHS[m]} ${y}`), nav(1)),
       h('div', { class: 'cal-wds' }, WD.map((w, i) => h('div', { class: `cal-wd${i >= 5 ? ' we' : ''}` }, w))),

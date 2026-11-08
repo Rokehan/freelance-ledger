@@ -396,3 +396,12 @@ input[type="date"]::-webkit-calendar-picker-indicator { cursor: pointer; filter:
 @media (max-width: 420px) { .cal-d { height: 2.35rem; } .cal-d span { width: 2.15rem; height: 2.15rem; } }
 .btn { justify-content: center; }
 .grid2 .lbl, .grid3 .lbl { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* v1.8.1: the preview is the same seamless pill as a saved run, caps only at the two ends */
+.cal-d.pv { background: rgb(47 214 255 / .16); border-radius: 0 !important; }
+.cal-d.pv.pvs, .cal-d.pv.c0 { border-top-left-radius: 99px !important; border-bottom-left-radius: 99px !important; }
+.cal-d.pv.pve, .cal-d.pv.c6 { border-top-right-radius: 99px !important; border-bottom-right-radius: 99px !important; }
+.cal-d.pv:not(.sel) span { box-shadow: none; }
+.cal-d.pv span { color: #fff; background: none !important; box-shadow: none !important; font-weight: 400; }
+.cal-d.pv.pvs span, .cal-d.pv.pve span { background: linear-gradient(135deg, var(--neon2), var(--neon)) !important; color: #031028; font-weight: 700; box-shadow: 0 0 10px rgb(47 214 255 / .55) !important; }
+.cal-d.pv.pending span { animation: none; }
